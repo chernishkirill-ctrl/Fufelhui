@@ -14,7 +14,7 @@ from telegraph import Telegraph
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Твои данные встроены
+# Конфигурация подставлена автоматически
 TOKEN = "8875020404:AAHP46AKn-9ZGQc7aLuvy0te1VT1U71Lvx4"
 PUBLIC_CHANNEL_ID = "-1004428877093"
 AGENT_WORK_CHAT_ID = -1003889243376
@@ -29,13 +29,13 @@ telegraph = Telegraph()
 telegraph.create_account(short_name='RealEstateBot')
 
 # Хранилища в памяти
-ACTIVE_AGENTS = [11111111, 22222222] # Сюда при необходимости добавишь реальные ID агентов
+ACTIVE_AGENTS = [11111111, 22222222] 
 reports_storage = {} 
 lead_claims = {} 
 
 # Состояния FSM
 class FormStates(StatesGroup):
-    waiting_for_object_link = State()
+    waiting_for_object_data = State()
     waiting_for_client_name = State()
     waiting_for_agent_report = State()
 
@@ -71,40 +71,61 @@ async def cmd_start(message: types.Message):
     )
 
 
-# --- 3. ПУБЛІКАЦІЯ ОБ'ЄКТА ЧЕРЕЗ TELEGRAPH ---
+# --- 3. ПУБЛІКАЦІЯ ОБ'ЄКТА ЧЕРЕЗ TELEGRAPH С ФОТО ---
 @dp.callback_query(F.data == "add_object")
 async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != MY_ADMIN_ID:
         return
-    await callback.message.answer("Будь ласка, надішли посилання на об'єкт нерухомості:")
-    await state.set_state(FormStates.waiting_for_object_link)
+    await callback.message.answer("Будь ласка, надішли **фотографію** об'єкта разом із посиланням в описі (або просто текст із посиланням):")
+    await state.set_state(FormStates.waiting_for_object_data)
     await callback.answer()
 
-@dp.message(FormStates.waiting_for_object_link)
-async def handle_object_link(message: types.Message, state: FSMContext):
+@dp.message(FormStates.waiting_for_object_data)
+async def handle_object_data(message: types.Message, state: FSMContext):
     if message.from_user.id != MY_ADMIN_ID:
         return
     
-    link = message.text
-    await message.answer("⏳ Обробляю посилання та створюю сторінку на Telegraph...")
+    # Достаем текст (или подпись к фото, если скинули картинку)
+    text_content = message.caption if message.caption else message.text
+    photo_id = message.photo[-1].file_id if message.photo else None
+
+    if not text_content:
+        await message.answer("❌ Потрібно надіслати посилання або текст із описом!")
+        return
+
+    await message.answer("⏳ Обробляю дані та створюю сторінку на Telegraph...")
 
     try:
         response = telegraph.create_page(
-            title='Об\'єкт нерухомості',
-            html_content=f'<p>Детальний опис об\'єкта нерухомості.</p><p>Джерело: <a href="{link}">посилання</a></p>'
+            title="Об'єкт нерухомості",
+            html_content=f"<p><b>Опис / Деталі:</b> {text_content}</p>"
         )
-        telegraph_url = f"https://telegra.ph/{response['path']}"
+        
+        page_path = response.get('path') if isinstance(response, dict) else response
+        telegraph_url = f"https://telegra.ph/{page_path}"
 
         builder = InlineKeyboardBuilder()
         builder.row(types.InlineKeyboardButton(text="📄 Дивитися повний огляд об'єкта", url=telegraph_url))
         builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data="client_request_view"))
 
-        await bot.send_message(
-            chat_id=PUBLIC_CHANNEL_ID,
-            text="🏠 **Новий об'єкт нерухомості у базі!**\n\nАктуальна пропозиція за вигідною ціною. Переходьте за посиланням нижче для ознайомлення з деталями.",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
+        channel_text = "🏠 **Новий об'єкт нерухомості у базі!**\n\nАктуальна пропозиція за вигідною ціною. Переходьте за посиланням нижче для ознайомлення з деталями."
+
+        if photo_id:
+            await bot.send_photo(
+                chat_id=PUBLIC_CHANNEL_ID,
+                photo=photo_id,
+                caption=channel_text,
+                reply_markup=builder.as_markup(),
+                parse_mode="Markdown"
+            )
+        else:
+            await bot.send_message(
+                chat_id=PUBLIC_CHANNEL_ID,
+                text=channel_text,
+                reply_markup=builder.as_markup(),
+                parse_mode="Markdown"
+            )
+
         await message.answer(f"✅ Об'єкт успішно опубліковано у каналі!\nПосилання на Telegraph: {telegraph_url}")
     except Exception as e:
         await message.answer(f"❌ Помилка при створенні публікації: {e}")
@@ -112,7 +133,7 @@ async def handle_object_link(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# --- 4. КЛІЄНТСЬКА ЗАЯВКА З КАНАЛУ В РОБОЧИЙ ЧАТ ---
+# --- 4. КЛІЄНТСЬКА ЗАЯВКА З КАНАЛУ В РОБОЧИЙ ЧАТ (БЕЗ КНОПОК ПЕРЕГЛЯДУ У ЧАТІ АГЕНТІВ) ---
 @dp.callback_query(F.data == "client_request_view")
 async def client_request_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer(
@@ -129,6 +150,7 @@ async def process_client_lead(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data="claim_lead"))
 
+    # В рабочий чат агентов отправляем чистую заявку ТОЛЬКО с кнопкой принятия, без лишних кнопок просмотра
     sent_msg = await bot.send_message(
         chat_id=AGENT_WORK_CHAT_ID,
         text=f"🔔 **Нова заявка від клієнта!**\n\nКонтактні дані: {lead_info}\nСтатус: Очікує агента.",
