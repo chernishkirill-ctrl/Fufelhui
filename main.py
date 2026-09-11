@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import urllib.parse
 from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
@@ -14,8 +15,8 @@ from telegraph import Telegraph
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Конфигурация ID и токена
-TOKEN = "8824858569:AAG4sMNxzUz3_VTBAIPI4XAhuwk76dUBrE8"
+# Конфигурация ID и нового токена
+TOKEN = "8559796550:AAGta7fOw8WpHaciLGGxN3xeNqVJWmLtFI4"
 PUBLIC_CHANNEL_ID = "-1004428877093"
 AGENT_WORK_CHAT_ID = -1003889243376
 MY_ADMIN_ID = 8799145351
@@ -32,7 +33,6 @@ telegraph.create_account(short_name='NestimaRealEstate')
 ACTIVE_AGENTS = [11111111, 22222222] 
 reports_storage = {} 
 lead_claims = {} 
-temp_object_storage = {} # Временное хранилище для данных объекта (адрес, фото и т.д.)
 
 # Состояния FSM
 class FormStates(StatesGroup):
@@ -73,14 +73,14 @@ async def cmd_start(message: types.Message):
     )
 
 
-# --- 3. ПУБЛІКАЦІЯ ОБ'ЄКТА З ПОДТРИМКОЮ АЛЬБОМІВ И КАРТ ---
+# --- 3. ПУБЛІКАЦІЯ ОБ'ЄКТА З ПІДТРИМКОЮ ФОТО, ТЕКСТУ ТА КАРТ ---
 @dp.callback_query(F.data == "add_object")
 async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != MY_ADMIN_ID:
         return
     await callback.message.answer(
-        "Надішли мені **одну фотографію, цілий альбом фотографій** або просто **текст/посилання** з описом об'єкта.\n\n"
-        "*(Якщо надсилаєш фото, впиши адресу або опис в підписі до фото)*"
+        "Надішли мені **фотографію** або **текст/посилання** з описом та адресою об'єкта.\n\n"
+        "*(Якщо надсилаєш фото, впиши адресу або опис у підписі до нього)*"
     )
     await state.set_state(FormStates.waiting_for_object_data)
     await callback.answer()
@@ -94,7 +94,7 @@ async def handle_object_data(message: types.Message, state: FSMContext):
     photo_id = message.photo[-1].file_id if message.photo else None
 
     if not user_text and not photo_id:
-        await message.answer("❌ Потрібно надіслати хоча бы текст, посилання або фотографію!")
+        await message.answer("❌ Потрібно надіслати хоча б текст, посилання або фотографію!")
         return
 
     await message.answer("⏳ Обробляю дані, створюю сторінку на Telegraph та готую публікацію...")
@@ -102,20 +102,20 @@ async def handle_object_data(message: types.Message, state: FSMContext):
     try:
         # Генерация страницы на Telegraph
         page_title = "Об'єкт нерухомості Nestima"
-        page_content = f"<p><b>Детальний опис об'єкта:</b><br>{user_text if user_text else 'Опис відсутній, дивіться фото та деталі в каналі.'}</p>"
+        page_content = f"<p><b>Детальний опис об'єкта:</b><br>{user_text if user_text else 'Опис відсутній, дивіться деталі в каналі.'}</p>"
         
         response = telegraph.create_page(title=page_title, html_content=page_content)
         page_path = response.get('path') if isinstance(response, dict) else response
         telegraph_url = f"https://telegra.ph/{page_path}"
 
-        # Формирование кнопок для публичного канала (включая карту)
+        # Формирование кнопок для публичного канала
         builder = InlineKeyboardBuilder()
         builder.row(types.InlineKeyboardButton(text="📄 Повний огляд (Telegraph)", url=telegraph_url))
         
-        # Ссылка на Google Карты на основе текста (если указан адрес)
+        # Кнопка Google Maps на основе текста (если передан адрес)
         if user_text:
-            maps_query = user_text.replace('\n', ' ')[:100]  # берем часть текста как ориентир для поиска
-            maps_url = f"https://www.google.com/maps/search/?api=1&query={requests_url_safe(maps_query)}"
+            maps_query = user_text.replace('\n', ' ')[:100]
+            maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query)}"
             builder.row(types.InlineKeyboardButton(text="📍 Подивитися на мапі", url=maps_url))
             
         builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data="client_request_view"))
@@ -126,7 +126,7 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             "👇 Натискайте кнопки нижче для детального перегляду або запису на перегляд."
         )
 
-        # Публикация в канал
+        # Отправка в публичный канал
         if photo_id:
             await bot.send_photo(
                 chat_id=PUBLIC_CHANNEL_ID,
@@ -149,32 +149,26 @@ async def handle_object_data(message: types.Message, state: FSMContext):
     
     await state.clear()
 
-def requests_url_safe(text):
-    import urllib.parse
-    return urllib.parse.quote(text)
 
-
-# --- 4. КЛИЕНТСКАЯ ЗАЯВКА И УДОБНЫЙ ВВОД КОНТАКТОВ ---
+# --- 4. КЛІЄНТСЬКА ЗАЯВКА ТА ЗРУЧНИЙ ШАРИНГ КОНТАКТУ ---
 @dp.callback_query(F.data == "client_request_view")
 async def client_request_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer("Запит на перегляд об'єкта", show_alert=False)
     
-    # Создаем удобную клавиатуру с кнопкой отправки контакта в один клик
+    # Кнопка быстрого шаринга контакта через Telegram
     kb_builder = ReplyKeyboardBuilder()
     kb_builder.row(types.KeyboardButton(text="📱 Поділитися контактом", request_contact=True))
     
     msg = await callback.message.answer(
-        "Дбаємо про ваш час! Натисніть кнопку нижче **«📱 Поділитися контактом»**, щоб надіслати свій номер телефону менеджерові в один клік, або просто напишіть його у повідомленні.",
+        "Дбаємо про ваш час! Натисніть кнопку нижче **«📱 Поділитися контактом»**, щоб надіслати свій номер телефону менеджерові в один клік.",
         reply_markup=kb_builder.as_markup(resize_keyboard=True, one_time_keyboard=True)
     )
     
-    # Сохраняем ID сообщения для очистки клавиатуры позже
     await state.update_data(prompt_msg_id=msg.message_id)
     await state.set_state(FormStates.waiting_for_client_contact)
 
 @dp.message(FormStates.waiting_for_client_contact, F.contact | F.text)
 async def process_client_lead(message: types.Message, state: FSMContext):
-    # Достаем контакт (либо из кнопки поделиться контактом, либо обычным текстом)
     if message.contact:
         client_phone = message.contact.phone_number
         client_name = f"{message.contact.first_name or ''} {message.contact.last_name or ''}".strip()
@@ -182,7 +176,7 @@ async def process_client_lead(message: types.Message, state: FSMContext):
     else:
         lead_info = f"Контактні дані / текст: {message.text}"
 
-    # Удаляем клавиатуру с запросом контакта у клиента
+    # Удаляем служебное сообщение с кнопкой шаринга у пользователя
     try:
         data = await state.get_data()
         if "prompt_msg_id" in data:
@@ -193,7 +187,7 @@ async def process_client_lead(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data="claim_lead"))
 
-    # Отправка чистой заявки в рабочий чат агентов (БЕЗ лишних кнопок просмотра и карт!)
+    # Чистая заявка в рабочий чат агентов (без лишних кнопок)
     sent_msg = await bot.send_message(
         chat_id=AGENT_WORK_CHAT_ID,
         text=f"🔔 **Нова заявка на перегляд від клієнта!**\n\n👤 Дані клієнта: {lead_info}\n📌 Статус: Очікує агента.",
@@ -203,7 +197,6 @@ async def process_client_lead(message: types.Message, state: FSMContext):
     
     lead_claims[sent_msg.message_id] = None
     
-    # Убираем reply-клавиатуру у пользователя
     remove_kb = types.ReplyKeyboardRemove()
     await message.answer("✅ Дякуємо! Вашу заявку успішно надіслано. Наш агент зв'яжеться з вами найближчим часом.", reply_markup=remove_kb)
     await state.clear()
@@ -231,7 +224,7 @@ async def claim_lead_action(callback: types.CallbackQuery):
     await callback.answer("Ви успішно прийняли заявку в роботу!")
 
 
-# --- 5. СИСТЕМА ВЕЧЕРНИХ ОТЧЕТОВ АГЕНТОВ (22:00) ---
+# --- 5. СИСТЕМА ВЕЧІРНІХ ЗВІТІВ АГЕНТІВ (22:00) ---
 async def schedule_daily_reports():
     while True:
         now = datetime.now()
