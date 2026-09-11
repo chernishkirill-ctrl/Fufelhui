@@ -81,7 +81,7 @@ async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
         return
     await callback.message.answer(
         "Надішли мені **посилання на оголошення (наприклад, з DOM.RIA)**.\n"
-        "Бот сформує пост у твоєму форматі, опублікує в канал і надішле повну базу в робочий чат!"
+        "Бот сформує пост у твоєму форматі, опублікує в канал (без зайвих фото) і надішле повну базу в робочий чат!"
     )
     await state.set_state(FormStates.waiting_for_object_data)
     await callback.answer()
@@ -205,7 +205,7 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         page_path = response.get('path') if isinstance(response, dict) else response
         telegraph_url = f"https://telegra.ph/{page_path}"
 
-        # Формируем текст для публичного канала строго по твоему шаблону
+        # Формируем текст для публичного канала
         channel_text = (
             f"{parsed_info['rooms']}\n"
             f"✏️{parsed_info['area']}\n"
@@ -225,30 +225,16 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
-            types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data="client_request_view")
+            types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data=f"book_view_{obj_id}")
         )
 
-        # Публикация в публичный канал (если есть фото — альбомом, иначе текстом)
-        if parsed_info["photos"]:
-            media_group = [types.InputMediaPhoto(media=parsed_info["photos"][0], caption=channel_text, parse_mode="Markdown")]
-            for p in parsed_info["photos"][1:10]:
-                media_group.append(types.InputMediaPhoto(media=p))
-            await bot.send_media_group(chat_id=PUBLIC_CHANNEL_ID, media=media_group)
-        else:
-            await bot.send_message(
-                chat_id=PUBLIC_CHANNEL_ID, 
-                text=channel_text, 
-                reply_markup=builder.as_markup(), 
-                parse_mode="Markdown"
-            )
-
-        # Дублируем кнопки под альбомом/постом в канале через отдельное сообщение (или отправляем полный отчет в рабочий чат)
-        if parsed_info["photos"]:
-            await bot.send_message(
-                chat_id=PUBLIC_CHANNEL_ID,
-                text="👇 Кнопки для зв'язку та перегляду:",
-                reply_markup=builder.as_markup()
-            )
+        # Публикуем ТОЛЬКО текст с кнопками в публичный канал (без альбома фото сверху)
+        await bot.send_message(
+            chat_id=PUBLIC_CHANNEL_ID, 
+            text=channel_text, 
+            reply_markup=builder.as_markup(), 
+            parse_mode="Markdown"
+        )
 
         # Отправка полной информации в рабочий чат агентов
         work_chat_text = (
@@ -267,52 +253,45 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             work_media_group = [types.InputMediaPhoto(media=p) for p in parsed_info["photos"][:10]]
             await bot.send_media_group(chat_id=AGENT_WORK_CHAT_ID, media=work_media_group)
 
-        await message.answer(f"✅ Успішно! Об'єкт №{obj_id} опубліковано у твоєму форматі в канал.")
+        await message.answer(f"✅ Успішно! Об'єкт №{obj_id} опубліковано у канал без зайвих фото.")
     except Exception as e:
         await message.answer(f"❌ Помилка при публікації: {e}")
     
     await state.clear()
 
 
-# --- 4. ЗАПИСЬ КЛИЕНТА НА ПРОСМОТР ---
-@dp.callback_query(F.data == "client_request_view")
-async def client_request_start(callback: types.CallbackQuery, state: FSMContext):
-    try:
-        await bot.send_message(
-            chat_id=callback.from_user.id,
-            text="Вітаємо! Введіть ваш номер телефону або натисніть кнопку нижче, щоб поділитися контактом для запису на перегляд:",
-            reply_markup=ReplyKeyboardBuilder().row(types.KeyboardButton(text="📱 Поділитися контактом", request_contact=True)).as_markup(resize_keyboard=True, one_time_keyboard=True)
-        )
-        await callback.answer("Перейдіть у чат із ботом для оформлення заявки!", show_alert=True)
-    except Exception:
-        await callback.answer("Будь ласка, спочатку запустіть бота в особистих повідомленнях (/start)!", show_alert=True)
-        return
-
-    await state.set_state(FormStates.waiting_for_client_contact)
-
-@dp.message(FormStates.waiting_for_client_contact, F.contact | F.text)
-async def process_client_lead(message: types.Message, state: FSMContext):
-    if message.contact:
-        client_phone = message.contact.phone_number
-        client_name = f"{message.contact.first_name or ''} {message.contact.last_name or ''}".strip()
-        lead_info = f"Ім'я: {client_name}\nТелефон: +{client_phone}"
+# --- 4. ПРЯМАЯ ЗАПИСЬ КЛИЕНТА ИЗ КАНАЛА ---
+@dp.callback_query(F.data.startswith("book_view_"))
+async def direct_client_booking(callback: types.CallbackQuery):
+    obj_id = callback.data.split("_")[-1]
+    user = callback.from_user
+    
+    if user.username:
+        client_contact = f"@{user.username}"
     else:
-        lead_info = f"Контактні дані / текст: {message.text}"
+        client_contact = f"[{user.full_name}](tg://user?id={user.id})"
 
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data="claim_lead"))
 
     sent_msg = await bot.send_message(
         chat_id=AGENT_WORK_CHAT_ID,
-        text=f"😱😱ЗАЯВКА😱😱\n\n👤 **Клієнт:**\n{lead_info}\n\n📌 **Статус:** Очікує агента.",
+        text=(
+            f"😱😱ЗАЯВКА НА ПЕРЕГЛЯД (Об'єкт №{obj_id})😱😱\n\n"
+            f"👤 **Клієнт:** {user.full_name}\n"
+            f"📞 **Контакт:** {client_contact}\n\n"
+            f"📌 **Статус:** Очікує агента."
+        ),
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
     
     lead_claims[sent_msg.message_id] = None
     
-    await message.answer("✅ Дякуємо! Вашу заявку успішно надіслано. Наш менеджер зв'яжеться з вами найближчим часом.", reply_markup=types.ReplyKeyboardRemove())
-    await state.clear()
+    await callback.answer(
+        "✅ Заявку надіслано! Менеджер побачить її та зв'яжеться з вами.", 
+        show_alert=True
+    )
 
 @dp.callback_query(F.data == "claim_lead")
 async def claim_lead_action(callback: types.CallbackQuery):
