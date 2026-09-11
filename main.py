@@ -18,7 +18,7 @@ from telegraph import Telegraph
 logging.basicConfig(level=logging.INFO)
 
 # Конфигурация
-TOKEN = "8863316976:AAEkwc6WL6ntAwL8slhskQD4tbXLT_7sjSE"
+TOKEN = "8967502736:AAEgJiUBWDP-oJ6bi7zxC3VG8Z5FFmdhU_g"
 PUBLIC_CHANNEL_ID = "-1003889243376"       # Публичный канал (Telegraph + текст + хештег + 2 кнопки)
 AGENT_WORK_CHAT_ID = -1004428877093       # Рабочая база (полные фотки, телефон, вся инфа)
 MY_ADMIN_ID = 8799145351
