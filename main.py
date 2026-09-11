@@ -2,6 +2,8 @@ import os
 import logging
 import asyncio
 import urllib.parse
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
@@ -17,8 +19,8 @@ logging.basicConfig(level=logging.INFO)
 
 # Конфигурация по твоим точным требованиям
 TOKEN = "8863316976:AAEkwc6WL6ntAwL8slhskQD4tbXLT_7sjSE"
-PUBLIC_CHANNEL_ID = "-1003889243376"       # Публичная группа для объявлений
-AGENT_WORK_CHAT_ID = -1004428877093       # Рабочая группа (заявки и отчеты в 22:00)
+PUBLIC_CHANNEL_ID = "-1003889243376"       # Публичный канал (альбом + Telegraph + 2 кнопки)
+AGENT_WORK_CHAT_ID = -1004428877093       # Рабочая база (полная инфа, заявки, отчеты в 22:00)
 MY_ADMIN_ID = 8799145351
 
 bot = Bot(token=TOKEN)
@@ -34,7 +36,6 @@ ACTIVE_AGENTS = [11111111, 22222222]
 reports_storage = {} 
 lead_claims = {} 
 
-# Состояния FSM
 class FormStates(StatesGroup):
     waiting_for_object_data = State()
     waiting_for_client_contact = State()
@@ -55,7 +56,7 @@ async def start_web_server():
     logging.info(f"Web server started on port {port}")
 
 
-# --- 2. ПУЛЬТ УПРАВЛЕНИЯ АДМИНИСТРАТОРА ---
+# --- 2. ПУЛЬТ УПРАВЛЕНИЯ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.from_user.id != MY_ADMIN_ID:
@@ -63,7 +64,7 @@ async def cmd_start(message: types.Message):
         return
 
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="➕ Додати об'єкт (фото/альбом/текст)", callback_data="add_object"))
+    builder.row(types.InlineKeyboardButton(text="➕ Додати об'єкт за посиланням", callback_data="add_object"))
     builder.row(types.InlineKeyboardButton(text="📊 Переглянути звіти за сьогодні", callback_data="view_reports"))
     
     await message.answer(
@@ -73,87 +74,126 @@ async def cmd_start(message: types.Message):
     )
 
 
-# --- 3. ПУБЛІКАЦІЯ ОБ'ЄКТА З АЛЬБОМОМ ТА КАРТОЮ ---
+# --- 3. ПАРСИНГ DOM.RIA И ПУБЛИКАЦИЯ ---
 @dp.callback_query(F.data == "add_object")
 async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != MY_ADMIN_ID:
         return
     await callback.message.answer(
-        "Надішли мені **фотографію, альбом фотографій** або **текст/посилання** з описом та адресою об'єкта.\n\n"
-        "*(Якщо надсилаєш фото, впиши адресу або опис у підписі до нього)*"
+        "Надішли мені **посилання на оголошення (наприклад, з DOM.RIA)**.\n"
+        "Бот сам витягне опис, фотографії, адресу та надішле всю зводку в робочу базу, а в канал опублікує готовий альбом із кнопками!"
     )
     await state.set_state(FormStates.waiting_for_object_data)
     await callback.answer()
 
+def parse_dom_ria(url: str):
+    """Функция автоматического парсинга данных с DOM.RIA или других сайтов"""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    data = {"title": "Об'єкт нерухомості Nestima", "description": f"Посилання на джерело: {url}", "photos": [], "address": ""}
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return data
+            
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # Попытка вытащить заголовок
+        h1 = soup.find('h1')
+        if h1:
+            data["title"] = h1.get_text(strip=True)
+            
+        # Попытка вытащить описание
+        desc_div = soup.find('div', class_='description') or soup.find('div', id='description-area')
+        if desc_div:
+            data["description"] = desc_div.get_text(separator='<br>', strip=True)
+            
+        # Попытка вытащить адрес
+        address_tag = soup.find('span', class_='realty-address') or soup.find('div', class_='address')
+        if address_tag:
+            data["address"] = address_tag.get_text(strip=True)
+            
+        # Попытка вытащить фотографии
+        for img in soup.find_all('img', src=True):
+            src = img['src']
+            if 'photos' in src or 'rio' in src or 'dom.ria' in src:
+                if src.startswith('http') and src not in data["photos"]:
+                    data["photos"].append(src)
+        
+    except Exception as e:
+        logging.error(f"Error parsing URL: {e}")
+        
+    return data
+
 @dp.message(FormStates.waiting_for_object_data)
 async def handle_object_data(message: types.Message, state: FSMContext):
-    if callback_user_id := message.from_user.id != MY_ADMIN_ID:
+    if message.from_user.id != MY_ADMIN_ID:
         return
     
-    user_text = message.caption if message.caption else message.text
-    photo_id = message.photo[-1].file_id if message.photo else None
-
-    if not user_text and not photo_id:
-        await message.answer("❌ Потрібно надіслати хоча б текст, посилання або фотографію!")
+    user_input = message.text or message.caption
+    if not user_input:
+        await message.answer("❌ Надішли посилання на оголошення!")
         return
 
-    await message.answer("⏳ Обробляю дані, створюю сторінку на Telegraph та готую публікацію в канал...")
+    await message.answer("⏳ Парсю дані з посилання, готую сторінку Telegraph та формую публікацію...")
+
+    # Проверяем, есть ли в сообщении ссылка
+    parsed_info = {"title": "Об'єкт нерухомості", "description": user_input, "photos": [], "address": user_input}
+    if "http" in user_input:
+        # Извлекаем саму ссылку
+        words = user_input.split()
+        url = next((w for w in words if w.startswith("http")), None)
+        if url and "dom.ria" in url:
+            parsed_info = parse_dom_ria(url)
 
     try:
-        # Генерация страницы на Telegraph
-        page_title = "Об'єкт нерухомості Nestima"
-        page_content = f"<p><b>Детальний опис об'єкта:</b><br>{user_text if user_text else 'Опис відсутній, дивіться деталі в каналі.'}</p>"
-        
-        response = telegraph.create_page(title=page_title, html_content=page_content)
+        # Создаем страницу в Telegraph с полным описанием
+        telegraph_html = f"<h3>{parsed_info['title']}</h3><p>{parsed_info['description']}</p><p><b>Адреса:</b> {parsed_info['address']}</p>"
+        response = telegraph.create_page(title=parsed_info['title'][:50], html_content=telegraph_html)
         page_path = response.get('path') if isinstance(response, dict) else response
         telegraph_url = f"https://telegra.ph/{page_path}"
 
-        # Формирование ровно двух кнопок для публичного канала
+        # Кнопки для публичного канала (Ровно две штуки!)
         builder = InlineKeyboardBuilder()
+        maps_query = parsed_info['address'] if parsed_info['address'] else parsed_info['title']
+        maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query[:100])}"
         
-        # Кнопка 1: На мапі (анализируем текст и делаем ссылку на Google Maps)
-        if user_text:
-            maps_query = user_text.replace('\n', ' ')[:100]
-            maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query)}"
-        else:
-            maps_url = "https://www.google.com/maps"
-            
         builder.row(types.InlineKeyboardButton(text="📍 На мапі", url=maps_url))
-        
-        # Кнопка 2: Записатися на перегляд
         builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data="client_request_view"))
 
-        channel_text = (
-            f"{user_text if user_text else '🏠 **Новий ексклюзивний об\'єкт нерухомості!**'}\n\n"
-            f"📄 **Повний огляд:** {telegraph_url}"
-        )
+        channel_text = f"🏠 **{parsed_info['title']}**\n\n📄 **Повний огляд (Telegraph):** {telegraph_url}"
 
-        # Отправка в публичный канал (-1003889243376)
-        if photo_id:
-            await bot.send_photo(
-                chat_id=PUBLIC_CHANNEL_ID,
-                photo=photo_id,
-                caption=channel_text,
-                reply_markup=builder.as_markup(),
-                parse_mode="Markdown"
-            )
+        # Публикация в ПУБЛИЧНЫЙ КАНАЛ (-1003889243376)
+        if parsed_info["photos"] and len(parsed_info["photos"]) > 1:
+            # Если спарсилось несколько фото — шлем альбомом
+            media_group = [types.InputMediaPhoto(media=p, caption=channel_text if i == 0 else "", parse_mode="Markdown") for i, p in enumerate(parsed_info["photos"][:10])]
+            sent_msg = await bot.send_media_group(chat_id=PUBLIC_CHANNEL_ID, media=media_group)
+            # Отдельным сообщением с кнопками под альбом
+            await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text="👇 Керуйте замовленням за допомогою кнопок нижче:", reply_markup=builder.as_markup())
+        elif parsed_info["photos"]:
+            await bot.send_photo(chat_id=PUBLIC_CHANNEL_ID, photo=parsed_info["photos"][0], caption=channel_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
         else:
-            await bot.send_message(
-                chat_id=PUBLIC_CHANNEL_ID,
-                text=channel_text,
-                reply_markup=builder.as_markup(),
-                parse_mode="Markdown",
-                disable_web_page_preview=False
-            )
+            await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text=channel_text, reply_markup=builder.as_markup(), parse_mode="Markdown", disable_web_page_preview=False)
 
-        await message.answer(f"✅ Об'єкт успішно опубліковано у публічному каналі!\n🔗 Telegraph: {telegraph_url}")
+        # Отправка полной информации в РАБОЧУЮ БАЗУ (-1004428877093)
+        work_chat_text = (
+            f"📥 **Новий об'єкт додано до бази!**\n\n"
+            f"📌 **Назва:** {parsed_info['title']}\n"
+            f"📍 **Адреса:** {parsed_info['address']}\n"
+            f"🔗 **Посилання на джерело:** {user_input}\n"
+            f"📄 **Telegraph:** {telegraph_url}\n"
+            f"👤 **Додано адміністратором.**"
+        )
+        await bot.send_message(chat_id=AGENT_WORK_CHAT_ID, text=work_chat_text, parse_mode="Markdown")
+
+        await message.answer(f"✅ Успішно! Об'єкт опубліковано в канал, а повна зводка вирушила у робочу базу.\n🔗 Telegraph: {telegraph_url}")
     except Exception as e:
-        await message.answer(f"❌ Помилка при публікації: {e}")
+        await message.answer(f"❌ Помилка при обробці об'єкта: {e}")
     
     await state.clear()
 
 
-# --- 4. КЛІЄНТСЬКА ЗАЯВКА ТА ВВЕДЕННЯ ДАНИХ ПРИ НАТИСКАННІ КНОПКИ ---
+# --- 4. ЗАПИСЬ КЛИЕНТА НА ПРОСМОТР ---
 @dp.callback_query(F.data == "client_request_view")
 async def client_request_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer("Запит на перегляд об'єкта", show_alert=False)
@@ -162,7 +202,7 @@ async def client_request_start(callback: types.CallbackQuery, state: FSMContext)
     kb_builder.row(types.KeyboardButton(text="📱 Поділитися контактом", request_contact=True))
     
     msg = await callback.message.answer(
-        "Дбаємо про ваш час! Натисніть кнопку нижче **«📱 Поділитися контактом»**, щоб надіслати свій номер телефону менеджерові в один клік, або введіть ваші дані у повідомленні.",
+        "Дбаємо про ваш час! Натисніть кнопку нижче **«📱 Поділитися контактом»**, щоб надіслати свій номер телефону менеджерові в один клік.",
         reply_markup=kb_builder.as_markup(resize_keyboard=True, one_time_keyboard=True)
     )
     
@@ -188,7 +228,7 @@ async def process_client_lead(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data="claim_lead"))
 
-    # Отправка заявки в рабочую группу (-1004428877093)
+    # Заявка летит в рабочую базу (-1004428877093)
     sent_msg = await bot.send_message(
         chat_id=AGENT_WORK_CHAT_ID,
         text=f"🔔 **Нова заявка на перегляд від клієнта!**\n\n👤 Дані клієнта: {lead_info}\n📌 Статус: Очікує агента.",
@@ -225,7 +265,7 @@ async def claim_lead_action(callback: types.CallbackQuery):
     await callback.answer("Ви успішно прийняли заявку в роботу!")
 
 
-# --- 5. СИСТЕМА ВЕЧІРНІХ ЗВІТІВ АГЕНТІВ (22:00 В РОБОЧУ ГРУПУ) ---
+# --- 5. ВЕЧЕРНИЕ ОТЧЕТЫ В 22:00 В РАБОЧУЮ БАЗУ ---
 async def schedule_daily_reports():
     while True:
         now = datetime.now()
