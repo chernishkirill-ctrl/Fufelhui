@@ -1,7 +1,7 @@
 import os
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -14,8 +14,8 @@ from telegraph import Telegraph
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Конфигурация подставлена автоматически
-TOKEN = "8875020404:AAHP46AKn-9ZGQc7aLuvy0te1VT1U71Lvx4"
+# Новый токен бота
+TOKEN = "8824858569:AAG4sMNxzUz3_VTBAIPI4XAhuwk76dUBrE8"
 PUBLIC_CHANNEL_ID = "-1004428877093"
 AGENT_WORK_CHAT_ID = -1003889243376
 MY_ADMIN_ID = 8799145351
@@ -85,7 +85,6 @@ async def handle_object_data(message: types.Message, state: FSMContext):
     if message.from_user.id != MY_ADMIN_ID:
         return
     
-    # Достаем текст (или подпись к фото, если скинули картинку)
     text_content = message.caption if message.caption else message.text
     photo_id = message.photo[-1].file_id if message.photo else None
 
@@ -150,7 +149,6 @@ async def process_client_lead(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data="claim_lead"))
 
-    # В рабочий чат агентов отправляем чистую заявку ТОЛЬКО с кнопкой принятия, без лишних кнопок просмотра
     sent_msg = await bot.send_message(
         chat_id=AGENT_WORK_CHAT_ID,
         text=f"🔔 **Нова заявка від клієнта!**\n\nКонтактні дані: {lead_info}\nСтатус: Очікує агента.",
@@ -192,7 +190,6 @@ async def schedule_daily_reports():
         target_time = now.replace(hour=22, minute=0, second=0, microsecond=0)
         
         if now >= target_time:
-            from datetime import timedelta
             target_time += timedelta(days=1)
             
         sleep_seconds = (target_time - now).total_seconds()
