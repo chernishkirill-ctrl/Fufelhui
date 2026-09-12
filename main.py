@@ -151,18 +151,6 @@ async def handle_webapp_form(request):
     """
     return web.Response(text=html_content, content_type='text/html')
 
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle_keep_alive)
-    app.router.add_get("/form/{obj_id}", handle_webapp_form)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logging.info(f"Web server started on port {port}")
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.from_user.id != MY_ADMIN_ID:
@@ -526,10 +514,43 @@ async def admin_view_reports(callback: types.CallbackQuery):
     await callback.message.answer(report_text, parse_mode="Markdown")
     await callback.answer()
 
+async def on_startup(bot: Bot):
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+    if render_url:
+        webhook_url = f"{render_url.rstrip('/')}/webhook"
+        await bot.set_webhook(webhook_url)
+        logging.info(f"Webhook set to {webhook_url}")
+
+async def handle_telegram_webhook(request):
+    import json
+    from aiogram.types import Update
+    try:
+        data = await request.json()
+        telegram_update = Update(**data)
+        await dp.feed_update(bot=bot, update=telegram_update)
+        return web.Response(text="OK")
+    except Exception as e:
+        logging.error(f"Error handling webhook: {e}")
+        return web.Response(status=500)
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_keep_alive)
+    app.router.add_get("/form/{obj_id}", handle_webapp_form)
+    app.router.add_post("/webhook", handle_telegram_webhook)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Web server started on port {port}")
+
 async def main():
-    asyncio.create_task(start_web_server())
+    await on_startup(bot)
     asyncio.create_task(schedule_daily_reports())
-    await dp.start_polling(bot)
+    await start_web_server()
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
