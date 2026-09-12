@@ -17,7 +17,7 @@ from telegraph import Telegraph
 
 logging.basicConfig(level=logging.INFO)
 
-TOKEN = "8700665143:AAGGu6GZDxGLHMR7wTY8eJz7c6mQaxOzasE"
+TOKEN = "8682651825:AAE3T0Gdgphd0iccFFR2aE4i015DEJo6xhI"
 PUBLIC_CHANNEL_ID = "-1003889243376"
 AGENT_WORK_CHAT_ID = -1004428877093
 MY_ADMIN_ID = 8799145351
@@ -387,7 +387,6 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             render_url = "https://fufelhui.onrender.com"
         webapp_url = f"{render_url.rstrip('/')}/form/{obj_id}"
 
-        # Строгое создание кнопки через WebAppInfo без багов маппинга
         builder = InlineKeyboardBuilder()
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
