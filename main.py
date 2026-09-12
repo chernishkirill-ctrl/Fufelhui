@@ -379,13 +379,16 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             f"#Nestima"
         )
 
-        builder = InlineKeyboardBuilder()
         maps_query = parsed_info['address'] if parsed_info['address'] else "Дніпро"
         maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query)}"
         
-        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://fufelhui.onrender.com")
-        webapp_url = f"{render_url}/form/{obj_id}"
+        render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+        if not render_url or not render_url.startswith("http"):
+            render_url = "https://fufelhui.onrender.com"
+        webapp_url = f"{render_url.rstrip('/')}/form/{obj_id}"
 
+        # Строгое создание кнопки через WebAppInfo без багов маппинга
+        builder = InlineKeyboardBuilder()
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
             types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=webapp_url))
