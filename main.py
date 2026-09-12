@@ -37,13 +37,6 @@ logger = logging.getLogger("nestima")
 # ENV
 # ============================================================
 
-# В Render создай:
-#
-# BOT_TOKEN = твой текущий токен
-#
-# Остальные значения можно также вынести в ENV,
-# но здесь оставлены значения из твоего оригинального кода.
-
 TOKEN = os.environ.get("BOT_TOKEN")
 
 if not TOKEN:
@@ -65,7 +58,7 @@ MY_ADMIN_ID = int(
 
 
 # ============================================================
-# FLASK ДЛЯ RENDER
+# FLASK ДЛЯ RENDER (РЕШЕНИЕ ОШИБКИ ПОРТА)
 # ============================================================
 
 app = Flask(__name__)
@@ -253,9 +246,6 @@ def normalize_photo_url(src: str, base_url: str):
 def parse_listing(url: str):
     """
     Парсит объявление.
-
-    Функция синхронная, но вызывается через asyncio.to_thread(),
-    поэтому не блокирует Telegram-бота.
     """
 
     headers = {
@@ -292,7 +282,6 @@ def parse_listing(url: str):
     }
 
     try:
-
         logger.info(f"Parsing URL: {url}")
 
         response = requests.get(
@@ -312,7 +301,6 @@ def parse_listing(url: str):
             )
             return data
 
-        # Для большинства современных сайтов
         response.encoding = response.apparent_encoding
 
         soup = BeautifulSoup(
@@ -320,10 +308,7 @@ def parse_listing(url: str):
             "html.parser"
         )
 
-        # ----------------------------------------------------
         # TITLE
-        # ----------------------------------------------------
-
         h1 = soup.find("h1")
 
         if h1:
@@ -334,10 +319,7 @@ def parse_listing(url: str):
             if title:
                 data["title"] = title
 
-        # ----------------------------------------------------
         # DESCRIPTION
-        # ----------------------------------------------------
-
         description_selectors = [
             ("div", {"class": "page-description"}),
             ("div", {"class": "description"}),
@@ -350,11 +332,7 @@ def parse_listing(url: str):
         description_found = False
 
         for tag_name, attrs in description_selectors:
-
-            element = soup.find(
-                tag_name,
-                attrs
-            )
+            element = soup.find(tag_name, attrs)
 
             if not element:
                 continue
@@ -374,9 +352,7 @@ def parse_listing(url: str):
                 description_found = True
                 break
 
-        # OpenGraph description
         if not description_found:
-
             og_description = soup.find(
                 "meta",
                 property="og:description"
@@ -390,10 +366,7 @@ def parse_listing(url: str):
                 if text:
                     data["description"] = text
 
-        # ----------------------------------------------------
         # ADDRESS
-        # ----------------------------------------------------
-
         address_selectors = [
             ("span", {"class": "realty-address"}),
             ("div", {"class": "address"}),
@@ -403,45 +376,26 @@ def parse_listing(url: str):
         ]
 
         for tag_name, attrs in address_selectors:
-
-            address_tag = soup.find(
-                tag_name,
-                attrs
-            )
+            address_tag = soup.find(tag_name, attrs)
 
             if not address_tag:
                 continue
 
             addr_text = clean_text(
-                address_tag.get_text(
-                    " ",
-                    strip=True
-                )
+                address_tag.get_text(" ", strip=True)
             )
 
             if addr_text:
                 data["address"] = addr_text
                 break
 
-        # ----------------------------------------------------
-        # ADDRESS ИЗ META
-        # ----------------------------------------------------
-
         if data["address"] == "Дніпро":
-
             meta_address = (
-                soup.find(
-                    "meta",
-                    property="og:street-address"
-                )
-                or soup.find(
-                    "meta",
-                    attrs={"name": "address"}
-                )
+                soup.find("meta", property="og:street-address")
+                or soup.find("meta", attrs={"name": "address"})
             )
 
             if meta_address:
-
                 value = clean_text(
                     meta_address.get("content", "")
                 )
@@ -449,10 +403,7 @@ def parse_listing(url: str):
                 if value:
                     data["address"] = value
 
-        # ----------------------------------------------------
         # БЕРЕГ
-        # ----------------------------------------------------
-
         lower_addr = data["address"].lower()
 
         right_bank_words = [
@@ -470,23 +421,14 @@ def parse_listing(url: str):
             "чечеловск",
         ]
 
-        if any(
-            word in lower_addr
-            for word in right_bank_words
-        ):
-
+        if any(word in lower_addr for word in right_bank_words):
             data["bank"] = "Правий Берег"
             data["bank_hashtag"] = "#ПравийБерег"
-
         else:
-
             data["bank"] = "Лівий Берег"
             data["bank_hashtag"] = "#ЛівийБерег"
 
-        # ----------------------------------------------------
         # PRICE
-        # ----------------------------------------------------
-
         price_selectors = [
             ("span", {"class": "price"}),
             ("div", {"class": "price"}),
@@ -496,29 +438,18 @@ def parse_listing(url: str):
         ]
 
         for tag_name, attrs in price_selectors:
-
-            price_tag = soup.find(
-                tag_name,
-                attrs
-            )
+            price_tag = soup.find(tag_name, attrs)
 
             if not price_tag:
                 continue
 
             price = clean_text(
-                price_tag.get_text(
-                    " ",
-                    strip=True
-                )
+                price_tag.get_text(" ", strip=True)
             )
 
             if price:
                 data["price"] = price
                 break
-
-        # ----------------------------------------------------
-        # FULL PAGE TEXT
-        # ----------------------------------------------------
 
         full_text_page = clean_text(
             soup.get_text(
@@ -527,10 +458,7 @@ def parse_listing(url: str):
             )
         )
 
-        # ----------------------------------------------------
-        # КОЛИЧЕСТВО КОМНАТ
-        # ----------------------------------------------------
-
+        # КОМНАТЫ
         rooms_match = re.search(
             r'(\d{1,2})\s*[-]?\s*'
             r'(?:кімн|комн|кімнати|комнати|кімнат)',
@@ -539,7 +467,6 @@ def parse_listing(url: str):
         )
 
         if not rooms_match:
-
             rooms_match = re.search(
                 r'(\d{1,2})\s*кімн',
                 full_text_page,
@@ -547,19 +474,11 @@ def parse_listing(url: str):
             )
 
         if rooms_match:
-
             rooms_num = rooms_match.group(1)
-
             data["rooms"] = f"{rooms_num}к"
+            data["district_hashtag"] = f"#Дніпро{rooms_num}к"
 
-            data["district_hashtag"] = (
-                f"#Дніпро{rooms_num}к"
-            )
-
-        # ----------------------------------------------------
         # ПЛОЩАДЬ
-        # ----------------------------------------------------
-
         area_match = re.search(
             r'(\d+(?:[.,]\d+)?)\s*'
             r'(?:м²|м2|кв\.?\s*м|кв\.м)',
@@ -568,15 +487,10 @@ def parse_listing(url: str):
         )
 
         if area_match:
-
             area = area_match.group(1)
-
             data["area"] = f"{area}м²"
 
-        # ----------------------------------------------------
         # ЭТАЖ
-        # ----------------------------------------------------
-
         floor_match = re.search(
             r'(\d{1,2})\s*/\s*(\d{1,2})\s*'
             r'(?:пов|этаж|эт)',
@@ -585,17 +499,12 @@ def parse_listing(url: str):
         )
 
         if floor_match:
-
             data["floor"] = (
                 f"{floor_match.group(1)}/"
                 f"{floor_match.group(2)}"
             )
 
-        # Дополнительный вариант:
-        # "5 поверх з 9"
-
         if not data["floor"]:
-
             floor_match = re.search(
                 r'(\d{1,2})\s+'
                 r'(?:поверх|этаж)'
@@ -606,16 +515,12 @@ def parse_listing(url: str):
             )
 
             if floor_match:
-
                 data["floor"] = (
                     f"{floor_match.group(1)}/"
                     f"{floor_match.group(2)}"
                 )
 
-        # ----------------------------------------------------
         # PHONE
-        # ----------------------------------------------------
-
         phone_selectors = [
             ("span", {"class": "phone"}),
             ("a", {"class": "phone"}),
@@ -624,32 +529,20 @@ def parse_listing(url: str):
         ]
 
         for tag_name, attrs in phone_selectors:
-
-            phone_tag = soup.find(
-                tag_name,
-                attrs
-            )
+            phone_tag = soup.find(tag_name, attrs)
 
             if not phone_tag:
                 continue
 
             phone = clean_text(
-                phone_tag.get_text(
-                    " ",
-                    strip=True
-                )
+                phone_tag.get_text(" ", strip=True)
             )
 
             if phone:
                 data["phone"] = phone
                 break
 
-        # ----------------------------------------------------
-        # PHONE ИЗ ТЕКСТА
-        # ----------------------------------------------------
-
         if data["phone"] == "Не вказано":
-
             phone_match = re.search(
                 r'(\+380[\s\-\(\)\d]{9,})',
                 full_text_page
@@ -660,14 +553,10 @@ def parse_listing(url: str):
                     phone_match.group(1)
                 )
 
-        # ----------------------------------------------------
         # PHOTOS
-        # ----------------------------------------------------
-
         photo_urls = []
 
         for img in soup.find_all("img"):
-
             src = (
                 img.get("src")
                 or img.get("data-src")
@@ -678,10 +567,7 @@ def parse_listing(url: str):
             if not src:
                 continue
 
-            src = normalize_photo_url(
-                src,
-                response.url
-            )
+            src = normalize_photo_url(src, response.url)
 
             if not src:
                 continue
@@ -692,22 +578,12 @@ def parse_listing(url: str):
                 any(
                     keyword in src_lower
                     for keyword in [
-                        "photos",
-                        "photo",
-                        "images",
-                        "image",
-                        "realty",
-                        "property",
-                        "dom.ria",
-                        "ria",
-                        "upload",
-                        "cdn"
+                        "photos", "photo", "images", "image",
+                        "realty", "property", "dom.ria", "ria",
+                        "upload", "cdn"
                     ]
                 )
-                or re.search(
-                    r'\.(jpg|jpeg|png|webp)(\?|$)',
-                    src_lower
-                )
+                or re.search(r'\.(jpg|jpeg|png|webp)(\?|$)', src_lower)
             )
 
             if valid_image and src not in photo_urls:
@@ -723,16 +599,9 @@ def parse_listing(url: str):
         )
 
     except requests.RequestException as e:
-
-        logger.error(
-            f"HTTP error while parsing {url}: {e}"
-        )
-
+        logger.error(f"HTTP error while parsing {url}: {e}")
     except Exception as e:
-
-        logger.exception(
-            f"Unexpected parsing error: {e}"
-        )
+        logger.exception(f"Unexpected parsing error: {e}")
 
     return data
 
@@ -742,41 +611,16 @@ def parse_listing(url: str):
 # ============================================================
 
 def create_telegraph_page(parsed_info, obj_id):
-    """
-    Создаёт страницу Telegraph.
-    """
+    title = html.escape(parsed_info["title"])
+    address = html.escape(parsed_info["address"])
+    price = html.escape(parsed_info["price"])
+    description = html.escape(parsed_info["description"]).replace("\n", "<br>")
 
-    title = html.escape(
-        parsed_info["title"]
-    )
+    telegraph_html = f"<h3>{title}</h3>"
 
-    address = html.escape(
-        parsed_info["address"]
-    )
-
-    price = html.escape(
-        parsed_info["price"]
-    )
-
-    description = html.escape(
-        parsed_info["description"]
-    ).replace("\n", "<br>")
-
-    telegraph_html = (
-        f"<h3>{title}</h3>"
-    )
-
-    # Фотографии
     for photo in parsed_info["photos"]:
-
-        safe_photo = html.escape(
-            photo,
-            quote=True
-        )
-
-        telegraph_html += (
-            f'<img src="{safe_photo}"/>'
-        )
+        safe_photo = html.escape(photo, quote=True)
+        telegraph_html += f'<img src="{safe_photo}"/>'
 
     telegraph_html += (
         f"<p><b>Локація:</b> {address}</p>"
@@ -784,34 +628,16 @@ def create_telegraph_page(parsed_info, obj_id):
     )
 
     if parsed_info["floor"]:
-
-        floor = html.escape(
-            parsed_info["floor"]
-        )
-
-        telegraph_html += (
-            f"<p><b>Поверх:</b> {floor}</p>"
-        )
+        floor = html.escape(parsed_info["floor"])
+        telegraph_html += f"<p><b>Поверх:</b> {floor}</p>"
 
     if parsed_info["rooms"]:
-
-        rooms = html.escape(
-            parsed_info["rooms"]
-        )
-
-        telegraph_html += (
-            f"<p><b>Кімнати:</b> {rooms}</p>"
-        )
+        rooms = html.escape(parsed_info["rooms"])
+        telegraph_html += f"<p><b>Кімнати:</b> {rooms}</p>"
 
     if parsed_info["area"]:
-
-        area = html.escape(
-            parsed_info["area"]
-        )
-
-        telegraph_html += (
-            f"<p><b>Площа:</b> {area}</p>"
-        )
+        area = html.escape(parsed_info["area"])
+        telegraph_html += f"<p><b>Площа:</b> {area}</p>"
 
     telegraph_html += (
         "<h4>Детальний опис та характеристики:</h4>"
@@ -824,21 +650,14 @@ def create_telegraph_page(parsed_info, obj_id):
     )
 
     if isinstance(response, dict):
-
         page_path = response.get("path")
-
     else:
-
         page_path = response
 
     if not page_path:
-        raise RuntimeError(
-            "Telegraph не повернув path сторінки."
-        )
+        raise RuntimeError("Telegraph не повернув path сторінки.")
 
-    return (
-        f"https://telegra.ph/{page_path}"
-    )
+    return f"https://telegra.ph/{page_path}"
 
 
 # ============================================================
@@ -847,18 +666,14 @@ def create_telegraph_page(parsed_info, obj_id):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-
     if not is_admin(message.from_user.id):
-
         await message.answer(
             "Цей бот є закритим пунктом управління "
             "агентством нерухомості Nestima."
         )
-
         return
 
     builder = InlineKeyboardBuilder()
-
     builder.row(
         types.InlineKeyboardButton(
             text="➕ Додати об'єкт за посиланням",
@@ -884,14 +699,11 @@ async def process_add_object(
     callback: types.CallbackQuery,
     state: FSMContext
 ):
-
     if not is_admin(callback.from_user.id):
-
         await callback.answer(
             "⛔ Немає доступу.",
             show_alert=True
         )
-
         return
 
     await callback.message.answer(
@@ -901,10 +713,7 @@ async def process_add_object(
         "та збере службову інформацію."
     )
 
-    await state.set_state(
-        FormStates.waiting_for_object_data
-    )
-
+    await state.set_state(FormStates.waiting_for_object_data)
     await callback.answer()
 
 
@@ -917,7 +726,6 @@ async def handle_object_data(
     message: types.Message,
     state: FSMContext
 ):
-
     if not is_admin(message.from_user.id):
         return
 
@@ -930,12 +738,9 @@ async def handle_object_data(
     url = extract_url(user_input)
 
     if not url:
-
         await message.answer(
-            "❌ Надішли коректне посилання "
-            "на оголошення!"
+            "❌ Надішли коректне посилання на оголошення!"
         )
-
         return
 
     processing_message = await message.answer(
@@ -947,25 +752,8 @@ async def handle_object_data(
     )
 
     try:
-
-        # ----------------------------------------------------
-        # PARSING В ОКРЕМОМ ПОТОЦІ
-        # ----------------------------------------------------
-
-        parsed_info = await asyncio.to_thread(
-            parse_listing,
-            url
-        )
-
-        # ----------------------------------------------------
-        # OBJECT ID
-        # ----------------------------------------------------
-
+        parsed_info = await asyncio.to_thread(parse_listing, url)
         obj_id = make_object_id()
-
-        # ----------------------------------------------------
-        # TELEGRAPH
-        # ----------------------------------------------------
 
         telegraph_url = await asyncio.to_thread(
             create_telegraph_page,
@@ -973,35 +761,15 @@ async def handle_object_data(
             obj_id
         )
 
-        # ----------------------------------------------------
-        # PUBLIC CHANNEL TEXT
-        # ----------------------------------------------------
-
         channel_parts = []
-
         if parsed_info["rooms"]:
-
-            channel_parts.append(
-                f"🏠 {parsed_info['rooms']}"
-            )
-
+            channel_parts.append(f"🏠 {parsed_info['rooms']}")
         if parsed_info["area"]:
-
-            channel_parts.append(
-                f"📐 {parsed_info['area']}"
-            )
-
+            channel_parts.append(f"📐 {parsed_info['area']}")
         if parsed_info["price"]:
-
-            channel_parts.append(
-                f"💵 {parsed_info['price']}"
-            )
-
+            channel_parts.append(f"💵 {parsed_info['price']}")
         if parsed_info["address"]:
-
-            channel_parts.append(
-                f"📍 {parsed_info['address']}"
-            )
+            channel_parts.append(f"📍 {parsed_info['address']}")
 
         channel_text = (
             "\n".join(channel_parts)
@@ -1016,29 +784,14 @@ async def handle_object_data(
             + "#Nestima"
         )
 
-        # ----------------------------------------------------
-        # GOOGLE MAPS
-        # ----------------------------------------------------
-
-        maps_query = (
-            parsed_info["address"]
-            or "Дніпро"
-        )
-
+        maps_query = parsed_info["address"] or "Дніпро"
         maps_url = (
             "https://www.google.com/maps/search/"
             "?api=1&query="
-            + urllib.parse.quote(
-                maps_query
-            )
+            + urllib.parse.quote(maps_query)
         )
 
-        # ----------------------------------------------------
-        # КНОПКИ
-        # ----------------------------------------------------
-
         builder = InlineKeyboardBuilder()
-
         builder.row(
             types.InlineKeyboardButton(
                 text="📍 На мапі",
@@ -1050,10 +803,6 @@ async def handle_object_data(
             )
         )
 
-        # ----------------------------------------------------
-        # PUBLIC CHANNEL
-        # ----------------------------------------------------
-
         await bot.send_message(
             chat_id=PUBLIC_CHANNEL_ID,
             text=channel_text,
@@ -1061,55 +810,22 @@ async def handle_object_data(
             parse_mode="Markdown"
         )
 
-        # ----------------------------------------------------
-        # WORK CHAT
-        # ----------------------------------------------------
-
-        description = (
-            parsed_info["description"]
-        )
-
-        # Telegram лимит
+        description = parsed_info["description"]
         if len(description) > 3000:
-
-            description = (
-                description[:3000]
-                + "\n\n…"
-            )
+            description = description[:3000] + "\n\n…"
 
         work_chat_text = (
-            f"📥 **Новий об'єкт №{obj_id} "
-            f"у робочій базі!**\n\n"
-
-            f"📌 **Назва:** "
-            f"{parsed_info['title']}\n"
-
-            f"📍 **Адреса:** "
-            f"{parsed_info['address']}\n"
-
-            f"💵 **Ціна:** "
-            f"{parsed_info['price']}\n"
-
-            f"📐 **Площа:** "
-            f"{parsed_info['area'] or 'Не вказано'}\n"
-
-            f"🏠 **Кімнати:** "
-            f"{parsed_info['rooms'] or 'Не вказано'}\n"
-
-            f"🏢 **Поверх:** "
-            f"{parsed_info['floor'] or 'Не вказано'}\n"
-
-            f"📞 **Телефон власника / ріелтора:** "
-            f"`{parsed_info['phone']}`\n\n"
-
-            f"📄 **Telegraph:** "
-            f"{telegraph_url}\n\n"
-
-            f"📄 **Опис:**\n"
-            f"{description}\n\n"
-
-            f"🔗 **Посилання на джерело:**\n"
-            f"{url}"
+            f"📥 **Новий об'єкт №{obj_id} у робочій базі!**\n\n"
+            f"📌 **Назва:** {parsed_info['title']}\n"
+            f"📍 **Адреса:** {parsed_info['address']}\n"
+            f"💵 **Ціна:** {parsed_info['price']}\n"
+            f"📐 **Площа:** {parsed_info['area'] or 'Не вказано'}\n"
+            f"🏠 **Кімнати:** {parsed_info['rooms'] or 'Не вказано'}\n"
+            f"🏢 **Поверх:** {parsed_info['floor'] or 'Не вказано'}\n"
+            f"📞 **Телефон власника / ріелтора:** `{parsed_info['phone']}`\n\n"
+            f"📄 **Telegraph:** {telegraph_url}\n\n"
+            f"📄 **Опис:**\n{description}\n\n"
+            f"🔗 **Посилання на джерело:**\n{url}"
         )
 
         await bot.send_message(
@@ -1118,83 +834,41 @@ async def handle_object_data(
             parse_mode="Markdown"
         )
 
-        # ----------------------------------------------------
-        # PHOTOS В WORK CHAT
-        # ----------------------------------------------------
-
         photos = parsed_info["photos"][:10]
-
         if photos:
-
             media = []
-
             for photo in photos:
-
                 try:
-
-                    media.append(
-                        types.InputMediaPhoto(
-                            media=photo
-                        )
-                    )
-
+                    media.append(types.InputMediaPhoto(media=photo))
                 except Exception as photo_error:
-
-                    logger.warning(
-                        f"Photo skipped: "
-                        f"{photo} | "
-                        f"{photo_error}"
-                    )
+                    logger.warning(f"Photo skipped: {photo} | {photo_error}")
 
             if media:
-
                 try:
-
                     await bot.send_media_group(
                         chat_id=AGENT_WORK_CHAT_ID,
                         media=media
                     )
-
                 except Exception as media_error:
-
-                    logger.error(
-                        f"Media group error: "
-                        f"{media_error}"
-                    )
-
-        # ----------------------------------------------------
-        # SUCCESS
-        # ----------------------------------------------------
+                    logger.error(f"Media group error: {media_error}")
 
         await processing_message.edit_text(
             f"✅ Успішно!\n\n"
             f"Об'єкт №{obj_id}\n"
             f"Пост опубліковано у канал.\n"
-            f"Фото та службова інформація "
-            f"надіслані в робочий чат."
+            f"Фото та службова інформація надіслані в робочий чат."
         )
 
     except Exception as e:
-
-        logger.exception(
-            "Object processing error"
-        )
-
+        logger.exception("Object processing error")
         try:
-
             await processing_message.edit_text(
                 "❌ Не вдалося обробити оголошення.\n\n"
                 f"Помилка: {str(e)[:1000]}"
             )
-
         except Exception:
-
-            await message.answer(
-                "❌ Сталася помилка під час обробки."
-            )
-
+            await message.answer("❌ Сталася помилка під час обробки.")
     finally:
-
         await state.clear()
 
 
@@ -1202,77 +876,40 @@ async def handle_object_data(
 # КЛИЕНТ НАЖАЛ "ЗАПИСАТИСЯ"
 # ============================================================
 
-@dp.callback_query(
-    F.data.startswith("book_")
-)
-async def process_channel_booking(
-    callback: types.CallbackQuery
-):
-
+@dp.callback_query(F.data.startswith("book_"))
+async def process_channel_booking(callback: types.CallbackQuery):
     try:
-
-        obj_id = callback.data.split(
-            "_",
-            1
-        )[1]
-
+        obj_id = callback.data.split("_", 1)[1]
     except Exception:
-
-        await callback.answer(
-            "❌ Помилка заявки.",
-            show_alert=True
-        )
-
+        await callback.answer("❌ Помилка заявки.", show_alert=True)
         return
 
     user = callback.from_user
-
-    client_name = (
-        user.full_name
-        or "Не вказано"
-    )
-
-    client_username = (
-        f"@{user.username}"
-        if user.username
-        else "Не вказано"
-    )
+    client_name = user.full_name or "Не вказано"
+    client_username = f"@{user.username}" if user.username else "Не вказано"
 
     builder = InlineKeyboardBuilder()
-
     builder.row(
         types.InlineKeyboardButton(
             text="🟢 Прийняти заявку",
-            callback_data=(
-                f"claim_lead_"
-                f"{obj_id}_"
-                f"{user.id}"
-            )
+            callback_data=f"claim_lead_{obj_id}_{user.id}"
         )
     )
 
     await bot.send_message(
         chat_id=AGENT_WORK_CHAT_ID,
         text=(
-            f"😱😱 **ЗАЯВКА НА ПЕРЕГЛЯД** "
-            f"**(Об'єкт №{obj_id})** 😱😱\n\n"
-
-            f"👤 **Клієнт:** "
-            f"{client_name}\n"
-
-            f"💬 **Telegram:** "
-            f"{client_username}\n"
-
-            f"🆔 **ID:** "
-            f"`{user.id}`"
+            f"😱😱 **ЗАЯВКА НА ПЕРЕГЛЯД** **(Об'єкт №{obj_id})** 😱😱\n\n"
+            f"👤 **Клієнт:** {client_name}\n"
+            f"💬 **Telegram:** {client_username}\n"
+            f"🆔 **ID:** `{user.id}`"
         ),
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
 
     await callback.answer(
-        "✅ Заявку надіслано! "
-        "Ріелтор зв'яжеться з вами.",
+        "✅ Заявку надіслано! Ріелтор зв'яжеться з вами.",
         show_alert=True
     )
 
@@ -1281,58 +918,23 @@ async def process_channel_booking(
 # АГЕНТ ЗАБИРАЕТ ЗАЯВКУ
 # ============================================================
 
-@dp.callback_query(
-    F.data.startswith("claim_lead_")
-)
-async def claim_lead_action(
-    callback: types.CallbackQuery
-):
-
-    # --------------------------------------------------------
-    # Проверка агента
-    #
-    # Сейчас разрешаем брать заявку участникам
-    # рабочего чата.
-    #
-    # Telegram сам гарантирует callback от реального
-    # пользователя.
-    #
-    # Дополнительную проверку можно позже сделать через БД.
-    # --------------------------------------------------------
-
+@dp.callback_query(F.data.startswith("claim_lead_"))
+async def claim_lead_action(callback: types.CallbackQuery):
     parts = callback.data.split("_")
 
     if len(parts) != 4:
-
-        await callback.answer(
-            "❌ Некоректна заявка.",
-            show_alert=True
-        )
-
+        await callback.answer("❌ Некоректна заявка.", show_alert=True)
         return
 
     obj_id = parts[2]
     client_id = parts[3]
-
-    agent_name = (
-        callback.from_user.full_name
-        or "Агент"
-    )
-
-    # --------------------------------------------------------
-    # Бронируем заявку
-    # --------------------------------------------------------
+    agent_name = callback.from_user.full_name or "Агент"
 
     await callback.message.edit_text(
         text=(
-            f"😱😱 **ЗАЯВКА НА ПЕРЕГЛЯД** "
-            f"**(Об'єкт №{obj_id})** 😱😱\n\n"
-
-            f"🔒 **Заброньовано агентом:** "
-            f"{agent_name}\n"
-
-            f"🆔 **ID клієнта:** "
-            f"`{client_id}`"
+            f"😱😱 **ЗАЯВКА НА ПЕРЕГЛЯД** **(Об'єкт №{obj_id})** 😱😱\n\n"
+            f"🔒 **Заброньовано агентом:** {agent_name}\n"
+            f"🆔 **ID клієнта:** `{client_id}`"
         ),
         reply_markup=None,
         parse_mode="Markdown"
@@ -1345,66 +947,29 @@ async def claim_lead_action(
 
 
 # ============================================================
-# ERROR HANDLER
-# ============================================================
-
-@dp.errors()
-async def global_error_handler(
-    event
-):
-
-    logger.exception(
-        f"Unhandled aiogram error: {event.exception}"
-    )
-
-    return True
-
-
-# ============================================================
 # MAIN
 # ============================================================
 
 async def main():
+    logger.info("Starting Nestima Telegram Bot...")
 
-    logger.info(
-        "Starting Nestima Telegram Bot..."
-    )
-
-    # Flask для Render
+    # Запускаем Flask-сервер в фоновом потоке, чтобы Render видел открытый порт
     keep_alive()
 
     # Telegraph
-    await asyncio.to_thread(
-        init_telegraph
-    )
+    await asyncio.to_thread(init_telegraph)
 
     # Удаляем старый webhook
-    await bot.delete_webhook(
-        drop_pending_updates=True
-    )
+    await bot.delete_webhook(drop_pending_updates=True)
 
-    logger.info(
-        "Telegram webhook removed."
-    )
-
-    logger.info(
-        "Starting polling..."
-    )
+    logger.info("Telegram webhook removed.")
+    logger.info("Starting polling...")
 
     try:
-
-        await dp.start_polling(
-            bot,
-            allowed_updates=dp.resolve_used_update_types()
-        )
-
+        await dp.start_polling(bot)
     finally:
-
         await bot.session.close()
-
-        logger.info(
-            "Bot stopped."
-        )
+        logger.info("Bot stopped.")
 
 
 # ============================================================
@@ -1412,13 +977,7 @@ async def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     try:
-
         asyncio.run(main())
-
     except KeyboardInterrupt:
-
-        logger.info(
-            "Bot stopped manually."
-        )
+        logger.info("Bot stopped manually.")
