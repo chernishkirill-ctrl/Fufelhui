@@ -187,7 +187,7 @@ async def cmd_start(message: types.Message):
     )
 
 
-# --- 3. ОБРАБОТКА ДАННЫХ ИЗ ВСПЛЫВАЮЩЕГО ОКНА (WEB APP) ---
+# --- 3. ОБРАБОТКА ДАННЫХ ИЗ ФОРМЫ (WEB APP) ---
 @dp.message(F.web_app_data)
 async def process_webapp_data(message: types.Message):
     import json
@@ -210,7 +210,7 @@ async def process_webapp_data(message: types.Message):
 
         await bot.send_message(
             chat_id=AGENT_WORK_CHAT_ID,
-            text="😱😱 ЗАЯВКА НА ПЕРЕГЛЯД 😱😱",
+            text=f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД (Об'єкт №{obj_id}) 😱😱",
             reply_markup=builder.as_markup(),
             parse_mode="Markdown"
         )
@@ -236,7 +236,7 @@ async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
 def parse_listing(url: str):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en-US;q=0.7"
+        "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8"
     }
     
     data = {
@@ -273,9 +273,7 @@ def parse_listing(url: str):
             soup.find('div', class_='realty-description')
         )
         if desc_div:
-            cleaned_desc = desc_div.get_text(separator='\n', strip=True)
-            # Очищаем текст от случайных упоминаний источников, ID и т.д.
-            data["description"] = cleaned_desc
+            data["description"] = desc_div.get_text(separator='\n', strip=True)
             
         address_tag = (
             soup.find('span', class_='realty-address') or 
@@ -373,7 +371,7 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         page_path = response.get('path') if isinstance(response, dict) else response
         telegraph_url = f"https://telegra.ph/{page_path}"
 
-        # СТРОГО ЧИСТЫЙ ПОСТ ДЛЯ ПУБЛИЧНОГО КАНАЛА (без ID сайта, без телефонов, без ссылок-источников)
+        # СТРОГО ЧИСТЫЙ ПОСТ ДЛЯ ПУБЛИЧНОГО КАНАЛА
         channel_parts = []
         if parsed_info['rooms']: channel_parts.append(f"{parsed_info['rooms']}")
         if parsed_info['area']: channel_parts.append(f"✏️ {parsed_info['area']}")
@@ -395,12 +393,13 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         maps_query = parsed_info['address'] if parsed_info['address'] else "Дніпро"
         maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query)}"
         
-        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://render-app-name.onrender.com")
+        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://fufelhui.onrender.com")
         webapp_url = f"{render_url}/form/{obj_id}"
 
+        # ИСПРАВЛЕНИЕ: Используем url-кнопку вместо web_app, чтобы обйти ограничение каналов Telegram и убрать ошибку
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
-            types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=webapp_url))
+            types.InlineKeyboardButton(text="📝 Записатися на перегляд", url=webapp_url)
         )
 
         # Публикуем в публичный канал
@@ -411,7 +410,7 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             parse_mode="Markdown"
         )
 
-        # ПОЛНЫЙ СЛУЖЕБНЫЙ ОТЧЕТ ДЛЯ РАБОЧЕГО ЧАТА АГЕНТОВ (со всеми контактами и ссылкой на первоисточник)
+        # ПОЛНЫЙ СЛУЖЕБНЫЙ ОТЧЕТ ДЛЯ РАБОЧЕГО ЧАТА АГЕНТОВ
         work_chat_text = (
             f"📥 **Новий об'єкт №{obj_id} у робочій базі!**\n\n"
             f"📌 **Назва:** {parsed_info['title']}\n"
@@ -448,14 +447,12 @@ async def claim_lead_action(callback: types.CallbackQuery):
 
     lead_data = lead_details_storage.pop(lead_id) 
 
-    # Удаляем кнопку из общего чата для всех
     await callback.message.edit_text(
         text=f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД 😱😱\n\n🔒 **Заброньовано агентом:** {agent_name}",
         reply_markup=None,
         parse_mode="Markdown"
     )
 
-    # Высылаем лид победителю в ЛС
     try:
         await bot.send_message(
             chat_id=agent_id,
