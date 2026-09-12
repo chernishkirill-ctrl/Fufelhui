@@ -35,15 +35,16 @@ telegraph.create_account(short_name='NestimaRealEstate')
 ACTIVE_AGENTS = [11111111, 22222222] 
 reports_storage = {} 
 lead_claims = {} 
+lead_details_storage = {} # Хранит полные данные заявки для выдачи агенту
 
 class FormStates(StatesGroup):
     waiting_for_object_data = State()
     waiting_for_client_contact = State()
     waiting_for_agent_report = State()
 
-# --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
+# --- 1. KEEP-ALIVE WEB SERVER FOR RENDER (ЧТОБЫ БОТ НЕ ЗАСЫПАЛ) ---
 async def handle(request):
-    return web.Response(text="I am alive!")
+    return web.Response(text="I am alive and working 24/7!")
 
 async def start_web_server():
     app = web.Application()
@@ -81,21 +82,24 @@ async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
         return
     await callback.message.answer(
         "Надішли мені **посилання на оголошення (наприклад, з DOM.RIA)**.\n"
-        "Бот сформує пост у твоєму форматі, опублікує в канал (без зайвих фото) і надішле повну базу в робочий чат!"
+        "Бот сформує пост, опублікує в канал і надішле базу в робочий чат!"
     )
     await state.set_state(FormStates.waiting_for_object_data)
     await callback.answer()
 
 def parse_dom_ria(url: str):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7"
+    }
     data = {
         "rooms": "3к",
         "area": "65.0м²",
         "floor": "10/10",
         "bank": "Правий Берег",
-        "address": "вул. Космічна, 3-А",
-        "price": "15000 грн + комунальні послуги",
-        "district_hashtag": "#Перемога3к",
+        "address": "Дніпро",
+        "price": "Ціна за запитом",
+        "district_hashtag": "#Дніпро3к",
         "bank_hashtag": "#ПравийБерег",
         "title": "Об'єкт нерухомості Nestima",
         "description": f"Посилання на джерело: {url}",
@@ -114,11 +118,20 @@ def parse_dom_ria(url: str):
         if h1:
             data["title"] = h1.get_text(strip=True)
             
-        desc_div = soup.find('div', class_='description') or soup.find('div', id='description-area')
+        desc_div = (
+            soup.find('div', class_='page-description') or 
+            soup.find('div', class_='description') or 
+            soup.find('div', id='description-area') or
+            soup.find('span', class_='full-description')
+        )
         if desc_div:
             data["description"] = desc_div.get_text(separator='\n', strip=True)
             
-        address_tag = soup.find('span', class_='realty-address') or soup.find('div', class_='address')
+        address_tag = (
+            soup.find('span', class_='realty-address') or 
+            soup.find('div', class_='address') or
+            soup.find('h4', class_='address')
+        )
         if address_tag:
             addr_text = address_tag.get_text(strip=True)
             data["address"] = addr_text
@@ -137,11 +150,10 @@ def parse_dom_ria(url: str):
             else:
                 data["district_hashtag"] = "#Дніпро3к"
 
-        # Пытаемся вытянуть цену
         price_tag = soup.find('span', class_='price') or soup.find('div', class_='price')
         if price_tag:
             p_text = price_tag.get_text(strip=True)
-            if "грн" in p_text or "$" in p_text:
+            if "грн" in p_text or "$" in p_text or "€" in p_text:
                 data["price"] = f"{p_text} + комунальні послуги"
 
         phone_tag = soup.find('span', class_='phone') or soup.find('a', class_='phone')
@@ -150,7 +162,7 @@ def parse_dom_ria(url: str):
             
         for img in soup.find_all('img', src=True):
             src = img['src']
-            if 'photos' in src or 'rio' in src or 'dom.ria' in src:
+            if any(x in src for x in ['photos', 'rio', 'dom.ria', 's.dom.ria']):
                 if src.startswith('http') and src not in data["photos"]:
                     data["photos"].append(src)
         
@@ -159,43 +171,26 @@ def parse_dom_ria(url: str):
         
     return data
 
+
 @dp.message(FormStates.waiting_for_object_data)
 async def handle_object_data(message: types.Message, state: FSMContext):
     if message.from_user.id != MY_ADMIN_ID:
         return
     
     user_input = message.text or message.caption
-    if not user_input:
-        await message.answer("❌ Надішли посилання на оголошення!")
+    if not user_input or "http" not in user_input:
+        await message.answer("❌ Надішли коректне посилання на оголошення!")
         return
 
-    await message.answer("⏳ Обробляю дані, створюю сторінку Telegraph та формую пост...")
+    await message.answer("⏳ Парсю дані, створюю сторінку Telegraph та формую пост...")
 
-    parsed_info = {
-        "rooms": "3к",
-        "area": "65.0м²",
-        "floor": "10/10",
-        "bank": "Правий Берег",
-        "address": user_input,
-        "price": "15000 грн + комунальні послуги",
-        "district_hashtag": "#Перемога3к",
-        "bank_hashtag": "#ПравийБерег",
-        "title": "Об'єкт нерухомості",
-        "description": user_input,
-        "photos": [],
-        "phone": "Не вказано"
-    }
-    
-    if "http" in user_input:
-        words = user_input.split()
-        url = next((w for w in words if w.startswith("http")), None)
-        if url and "dom.ria" in url:
-            parsed_info = parse_dom_ria(url)
+    words = user_input.split()
+    url = next((w for w in words if w.startswith("http")), user_input.strip())
+    parsed_info = parse_dom_ria(url)
 
     try:
         obj_id = int(datetime.now().timestamp()) % 100000
 
-        # Создаем Telegraph страницу для детального просмотра
         telegraph_html = f"<h3>{parsed_info['title']}</h3>"
         for p in parsed_info["photos"]:
             telegraph_html += f'<img src="{p}"/>'
@@ -205,7 +200,6 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         page_path = response.get('path') if isinstance(response, dict) else response
         telegraph_url = f"https://telegra.ph/{page_path}"
 
-        # Формируем текст для публичного канала
         channel_text = (
             f"{parsed_info['rooms']}\n"
             f"✏️{parsed_info['area']}\n"
@@ -220,15 +214,15 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         )
 
         builder = InlineKeyboardBuilder()
-        maps_query = parsed_info['address'] if parsed_info['address'] else parsed_info['title']
-        maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query[:100])}"
+        # Ссылка на карту формируется строго по конкретному адресу из объявления
+        maps_query = parsed_info['address'] if parsed_info['address'] else "Дніпро"
+        maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query)}"
         
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
             types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data=f"book_view_{obj_id}")
         )
 
-        # Публикуем ТОЛЬКО текст с кнопками в публичный канал (без альбома фото сверху)
         await bot.send_message(
             chat_id=PUBLIC_CHANNEL_ID, 
             text=channel_text, 
@@ -236,15 +230,14 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             parse_mode="Markdown"
         )
 
-        # Отправка полной информации в рабочий чат агентов
         work_chat_text = (
             f"📥 **Новий об'єкт №{obj_id} у робочій базі!**\n\n"
             f"📌 **Назва:** {parsed_info['title']}\n"
             f"📍 **Адреса:** {parsed_info['address']}\n"
-            f"📞 **Номер телефону власника/агента:** `{parsed_info['phone']}`\n"
+            f"📞 **Телефон власника/агента:** `{parsed_info['phone']}`\n"
             f"📄 **Telegraph:** {telegraph_url}\n\n"
-            f"📄 **Повний опис:**\n{parsed_info['description']}\n\n"
-            f"🔗 **Посилання на джерело:** {user_input}"
+            f"📄 **Опис з сайту:**\n{parsed_info['description']}\n\n"
+            f"🔗 **Посилання:** {url}"
         )
         
         await bot.send_message(chat_id=AGENT_WORK_CHAT_ID, text=work_chat_text, parse_mode="Markdown")
@@ -253,14 +246,14 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             work_media_group = [types.InputMediaPhoto(media=p) for p in parsed_info["photos"][:10]]
             await bot.send_media_group(chat_id=AGENT_WORK_CHAT_ID, media=work_media_group)
 
-        await message.answer(f"✅ Успішно! Об'єкт №{obj_id} опубліковано у канал без зайвих фото.")
+        await message.answer(f"✅ Успішно! Об'єкт №{obj_id} опубліковано.")
     except Exception as e:
-        await message.answer(f"❌ Помилка при публікації: {e}")
+        await message.answer(f"❌ Помилка: {e}")
     
     await state.clear()
 
 
-# --- 4. ПРЯМАЯ ЗАПИСЬ КЛИЕНТА ИЗ КАНАЛА ---
+# --- 4. ЗАКРЫТАЯ ЗАЯВКА ДЛЯ АГЕНТОВ ---
 @dp.callback_query(F.data.startswith("book_view_"))
 async def direct_client_booking(callback: types.CallbackQuery):
     obj_id = callback.data.split("_")[-1]
@@ -271,49 +264,58 @@ async def direct_client_booking(callback: types.CallbackQuery):
     else:
         client_contact = f"[{user.full_name}](tg://user?id={user.id})"
 
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data="claim_lead"))
+    # Сохраняем скрытые данные заявки в памяти словаря
+    lead_id = int(datetime.now().timestamp())
+    lead_details_storage[lead_id] = {
+        "obj_id": obj_id,
+        "client_name": user.full_name,
+        "client_contact": client_contact
+    }
 
-    sent_msg = await bot.send_message(
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data=f"claim_lead_{lead_id}"))
+
+    # Отправляем в чат агентов ТОЛЬКО чистый текст-уведомление без контактов
+    await bot.send_message(
         chat_id=AGENT_WORK_CHAT_ID,
+        text="😱😱 ЗАЯВКА НА ПЕРЕГЛЯД 😱😱",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+    
+    await callback.answer(
+        "✅ Заявку надіслано! Менеджер зв'яжеться з вами найближчим часом.", 
+        show_alert=True
+    )
+
+@dp.callback_query(F.data.startswith("claim_lead_"))
+async def claim_lead_action(callback: types.CallbackQuery):
+    lead_id = int(callback.data.split("_")[-1])
+    agent_name = callback.from_user.full_name
+
+    # Проверка, не забрал ли кто-то другой
+    if lead_id not in lead_details_storage:
+        await callback.answer("⚠️ Цю заявку вже хтось прийняв або вона недоступна!", show_alert=True)
+        return
+
+    lead_data = lead_details_storage.pop(lead_id) # Удаляем из общего доступа, чтобы другие не видели
+
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text=f"🔒 Заброньовано агентом: {agent_name}", callback_data="claimed"))
+
+    # Редактируем сообщение в чате: теперь полные данные видит ТОЛЬКО тот, кто нажал первый
+    await callback.message.edit_text(
         text=(
-            f"😱😱ЗАЯВКА НА ПЕРЕГЛЯД (Об'єкт №{obj_id})😱😱\n\n"
-            f"👤 **Клієнт:** {user.full_name}\n"
-            f"📞 **Контакт:** {client_contact}\n\n"
-            f"📌 **Статус:** Очікує агента."
+            f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД 😱😱\n\n"
+            f"📌 **Об'єкт №:** {lead_data['obj_id']}\n"
+            f"👤 **Клієнт:** {lead_data['client_name']}\n"
+            f"📞 **Контакт клієнта:** {lead_data['client_contact']}\n\n"
+            f"✅ **Взято в роботу агентом:** {agent_name}"
         ),
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
-    
-    lead_claims[sent_msg.message_id] = None
-    
-    await callback.answer(
-        "✅ Заявку надіслано! Менеджер побачить її та зв'яжеться з вами.", 
-        show_alert=True
-    )
-
-@dp.callback_query(F.data == "claim_lead")
-async def claim_lead_action(callback: types.CallbackQuery):
-    msg_id = callback.message.message_id
-    agent_id = callback.from_user.id
-    agent_name = callback.from_user.full_name
-
-    if lead_claims.get(msg_id) is not None:
-        await callback.answer("⚠️ Цю заявку вже забронював інший агент!", show_alert=True)
-        return
-
-    lead_claims[msg_id] = agent_id
-    
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text=f"🔒 Заброньовано агентом: {agent_name}", callback_data="claimed"))
-
-    await callback.message.edit_text(
-        text=callback.message.text + f"\n\n✅ **Взято в роботу агентом:** {agent_name}",
-        reply_markup=builder.as_markup(),
-        parse_mode="Markdown"
-    )
-    await callback.answer("Ви успішно прийняли заявку в роботу!")
+    await callback.answer("Ви успішно прийняли заявку! Контакти клієнта розблоковано для вас.", show_alert=True)
 
 
 # --- 5. ВЕЧЕРНИЕ ОТЧЕТЫ В 22:00 ---
