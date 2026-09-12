@@ -15,24 +15,20 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from telegraph import Telegraph
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Конфигурация
-TOKEN = "8992791495:AAFRweBImbJDNYahSlwX3LOClEbSEl8yfDI"
-PUBLIC_CHANNEL_ID = "-1003889243376"       # Публичный канал (мини-презентация)
-AGENT_WORK_CHAT_ID = -1004428877093       # Рабочий чат агентов (база с телефонами)
+TOKEN = "8700665143:AAGGu6GZDxGLHMR7wTY8eJz7c6mQaxOzasE"
+PUBLIC_CHANNEL_ID = "-1003889243376"
+AGENT_WORK_CHAT_ID = -1004428877093
 MY_ADMIN_ID = 8799145351
 
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# Инициализация Telegraph
 telegraph = Telegraph()
 telegraph.create_account(short_name='NestimaRealEstate')
 
-# Хранилища в памяти
 ACTIVE_AGENTS = [11111111, 22222222] 
 reports_storage = {} 
 lead_details_storage = {} 
@@ -41,7 +37,6 @@ class FormStates(StatesGroup):
     waiting_for_object_data = State()
     waiting_for_agent_report = State()
 
-# --- 1. WEB SERVER (WEB APP ДЛЯ ФОРМЫ КЛИЕНТА + KEEP-ALIVE 24/7) ---
 async def handle_keep_alive(request):
     return web.Response(text="I am alive and working 24/7!")
 
@@ -168,8 +163,6 @@ async def start_web_server():
     await site.start()
     logging.info(f"Web server started on port {port}")
 
-
-# --- 2. ПУЛЬТ УПРАВЛЕНИЯ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.from_user.id != MY_ADMIN_ID:
@@ -186,8 +179,6 @@ async def cmd_start(message: types.Message):
         parse_mode="Markdown"
     )
 
-
-# --- 3. ОБРАБОТКА ДАННЫХ ИЗ ФОРМЫ (WEB APP) ---
 @dp.message(F.web_app_data)
 async def process_webapp_data(message: types.Message):
     import json
@@ -220,15 +211,13 @@ async def process_webapp_data(message: types.Message):
         logging.error(f"Error parsing web_app_data: {e}")
         await message.answer("❌ Сталася помилка при обробці форми. Спробуйте ще раз.")
 
-
-# --- 4. ПАРСИНГ И ПУБЛИКАЦИЯ ---
 @dp.callback_query(F.data == "add_object")
 async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != MY_ADMIN_ID:
         return
     await callback.message.answer(
         "Надішли мені **посилання на оголошення**.\n"
-        "Бот спарсить параметри, сформує ідеальну публікацію та створить картку для агенств!"
+        "Бот спарсить параметри, сформує мінімалістичний публічний пост та збереже службову базу!"
     )
     await state.set_state(FormStates.waiting_for_object_data)
     await callback.answer()
@@ -341,7 +330,6 @@ def parse_listing(url: str):
         
     return data
 
-
 @dp.message(FormStates.waiting_for_object_data)
 async def handle_object_data(message: types.Message, state: FSMContext):
     if message.from_user.id != MY_ADMIN_ID:
@@ -361,7 +349,6 @@ async def handle_object_data(message: types.Message, state: FSMContext):
     try:
         obj_id = int(datetime.now().timestamp()) % 100000
 
-        # Вся подробная информация и описание уходят на страницу Telegraph
         telegraph_html = f"<h3>{parsed_info['title']}</h3>"
         for p in parsed_info["photos"]:
             telegraph_html += f'<img src="{p}"/>'
@@ -378,7 +365,6 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         page_path = response.get('path') if isinstance(response, dict) else response
         telegraph_url = f"https://telegra.ph/{page_path}"
 
-        # МИНИМАЛИСТИЧНЫЙ ПОСТ ДЛЯ ПУБЛИЧНОГО КАНАЛА
         channel_parts = []
         if parsed_info['rooms']: channel_parts.append(f"🏠 {parsed_info['rooms']}")
         if parsed_info['area']: channel_parts.append(f"📐 {parsed_info['area']}")
@@ -400,13 +386,11 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://fufelhui.onrender.com")
         webapp_url = f"{render_url}/form/{obj_id}"
 
-        # Возвращаем рабочую кнопку web_app для открытия формы прямо в Telegram
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
             types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=webapp_url))
         )
 
-        # Публикуем в публичный канал
         await bot.send_message(
             chat_id=PUBLIC_CHANNEL_ID, 
             text=channel_text, 
@@ -414,7 +398,6 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             parse_mode="Markdown"
         )
 
-        # ПОЛНЫЙ СЛУЖЕБНЫЙ ОТЧЕТ ДЛЯ РАБОЧЕГО ЧАТА АГЕНТОВ
         work_chat_text = (
             f"📥 **Новий об'єкт №{obj_id} у робочій базі!**\n\n"
             f"📌 **Назва:** {parsed_info['title']}\n"
@@ -437,8 +420,6 @@ async def handle_object_data(message: types.Message, state: FSMContext):
     
     await state.clear()
 
-
-# --- 5. ОБРАБОТКА НАЖАТИЯ АГЕНТОМ («ПРИНЯТЬ ЗАЯВКУ») ---
 @dp.callback_query(F.data.startswith("claim_lead_"))
 async def claim_lead_action(callback: types.CallbackQuery):
     lead_id = int(callback.data.split("_")[-1])
@@ -474,8 +455,6 @@ async def claim_lead_action(callback: types.CallbackQuery):
 
     await callback.answer("✅ Контакти клієнта надіслано вам у особисті повідомлення.", show_alert=True)
 
-
-# --- 6. ВЕЧЕРНИЕ ОТЧЕТЫ В 22:00 ---
 async def schedule_daily_reports():
     while True:
         now = datetime.now()
@@ -545,8 +524,6 @@ async def admin_view_reports(callback: types.CallbackQuery):
     await callback.message.answer(report_text, parse_mode="Markdown")
     await callback.answer()
 
-
-# --- ЗАПУСК ---
 async def main():
     asyncio.create_task(start_web_server())
     asyncio.create_task(schedule_daily_reports())
