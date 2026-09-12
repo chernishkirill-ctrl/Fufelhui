@@ -1,4 +1,6 @@
-aiogram>=3.0.0
-aiohttp
-Telegraph
-beautifulsoup4
+aiogram>=3.4,<4
+Flask>=3.0
+requests>=2.31
+beautifulsoup4>=4.12
+telegraph>=2.2.0
+gunicorn>=21.2
