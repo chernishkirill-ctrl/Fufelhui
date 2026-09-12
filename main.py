@@ -36,123 +36,30 @@ lead_details_storage = {}
 class FormStates(StatesGroup):
     waiting_for_object_data = State()
     waiting_for_agent_report = State()
+    waiting_for_client_name = State()
+    waiting_for_client_phone = State()
 
 async def handle_keep_alive(request):
     return web.Response(text="I am alive and working 24/7!")
 
-async def handle_webapp_form(request):
-    obj_id = request.match_info.get('obj_id', '')
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="uk">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Заявка на перегляд - Nestima</title>
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
-        <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-                background-color: var(--tg-theme-bg-color, #ffffff);
-                color: var(--tg-theme-text-color, #000000);
-                padding: 20px;
-                margin: 0;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 90vh;
-            }}
-            .container {{
-                width: 100%;
-                max-width: 350px;
-                background: var(--tg-theme-secondary-bg-color, #f5f5f5);
-                padding: 20px;
-                border-radius: 14px;
-                box-sizing: border-box;
-            }}
-            h2 {{
-                text-align: center;
-                font-size: 20px;
-                margin-bottom: 20px;
-            }}
-            .form-group {{
-                margin-bottom: 15px;
-            }}
-            label {{
-                display: block;
-                font-size: 14px;
-                margin-bottom: 5px;
-                font-weight: 500;
-            }}
-            input {{
-                width: 100%;
-                padding: 12px;
-                border: 1px solid #ccc;
-                border-radius: 8px;
-                font-size: 16px;
-                box-sizing: border-box;
-                background: var(--tg-theme-bg-color, #ffffff);
-                color: var(--tg-theme-text-color, #000000);
-            }}
-            button {{
-                width: 100%;
-                padding: 14px;
-                background-color: var(--tg-theme-button-color, #2481cc);
-                color: var(--tg-theme-button-text-color, #ffffff);
-                border: none;
-                border-radius: 8px;
-                font-size: 16px;
-                font-weight: bold;
-                cursor: pointer;
-                margin-top: 10px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h2>🏠 Запис на перегляд (Об'єкт №{obj_id})</h2>
-            <div class="form-group">
-                <label for="name">Ваше ім'я:</label>
-                <input type="text" id="name" placeholder="Введіть ваше ім'я" required>
-            </div>
-            <div class="form-group">
-                <label for="phone">Номер телефону:</label>
-                <input type="tel" id="phone" placeholder="+380XXXXXXXXX" required>
-            </div>
-            <button onclick="submitData()">Надіслати заявку</button>
-        </div>
-
-        <script>
-            let tg = window.Telegram.WebApp;
-            tg.expand();
-
-            function submitData() {{
-                let name = document.getElementById('name').value.trim();
-                let phone = document.getElementById('phone').value.trim();
-
-                if (!name || !phone) {{
-                    alert('Будь ласка, заповніть всі поля!');
-                    return;
-                }}
-
-                let data = {{
-                    obj_id: "{obj_id}",
-                    name: name,
-                    phone: phone
-                }};
-
-                tg.sendData(JSON.stringify(data));
-                tg.close();
-            }}
-        </script>
-    </body>
-    </html>
-    """
-    return web.Response(text=html_content, content_type='text/html')
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    args = message.text.split()
+    
+    # Обработка клика на объект из публичного канала (форма в ЛС бота)
+    if len(args) > 1 and args[1].startswith("form_"):
+        obj_id = args[1].replace("form_", "")
+        state = dp.fsm.get_context(bot, message.from_user.id, message.chat.id)
+        await state.set_state(FormStates.waiting_for_client_name)
+        await state.update_data(obj_id=obj_id)
+        
+        await message.answer(
+            f"🏠 **Запис на перегляд об'єкта №{obj_id}**\n\n"
+            f"Будь ласка, введіть ваше **ім'я**:",
+            parse_mode="Markdown"
+        )
+        return
+
     if message.from_user.id != MY_ADMIN_ID:
         await message.answer("Цей бот є закритим пунктом управління агентством нерухомості Nestima.")
         return
@@ -167,37 +74,56 @@ async def cmd_start(message: types.Message):
         parse_mode="Markdown"
     )
 
-@dp.message(F.web_app_data)
-async def process_webapp_data(message: types.Message):
-    import json
-    try:
-        data = json.loads(message.web_app_data.data)
-        obj_id = data.get("obj_id")
-        client_name = data.get("name")
-        client_phone = data.get("phone")
+# Шаг 1: Получаем имя клиента в ЛС
+@dp.message(FormStates.waiting_for_client_name)
+async def process_client_name(message: types.Message, state: FSMContext):
+    name = message.text.strip()
+    if not name:
+        await message.answer("⚠️ Будь ласка, введіть коректне ім'я:")
+        return
+    
+    await state.update_data(client_name=name)
+    await state.set_state(FormStates.waiting_for_client_phone)
+    await message.answer("📱 Дякую! Тепер введіть ваш **номер телефону** (наприклад, +380XXXXXXXXX):", parse_mode="Markdown")
 
-        lead_id = int(datetime.now().timestamp())
-        lead_details_storage[lead_id] = {
-            "obj_id": obj_id,
-            "client_name": client_name,
-            "client_phone": client_phone,
-            "client_username": f"@{message.from_user.username}" if message.from_user.username else "Не вказано"
-        }
+# Шаг 2: Получаем телефон и отправляем заявку агентам
+@dp.message(FormStates.waiting_for_client_phone)
+async def process_client_phone(message: types.Message, state: FSMContext):
+    phone = message.text.strip()
+    if not phone:
+        await message.answer("⚠️ Будь ласка, введіть коректний номер телефону:")
+        return
 
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data=f"claim_lead_{lead_id}"))
+    data = await state.get_data()
+    obj_id = data.get("obj_id")
+    client_name = data.get("client_name")
+    client_phone = phone
 
-        await bot.send_message(
-            chat_id=AGENT_WORK_CHAT_ID,
-            text=f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД (Об'єкт №{obj_id}) 😱😱",
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
+    lead_id = int(datetime.now().timestamp())
+    lead_details_storage[lead_id] = {
+        "obj_id": obj_id,
+        "client_name": client_name,
+        "client_phone": client_phone,
+        "client_username": f"@{message.from_user.username}" if message.from_user.username else "Не вказано"
+    }
 
-        await message.answer("✅ Дякуємо! Вашу заявку успішно надіслано агентам. Менеджер зв'яжеться з вами найближчим часом.")
-    except Exception as e:
-        logging.error(f"Error parsing web_app_data: {e}")
-        await message.answer("❌ Сталася помилка при обробці форми. Спробуйте ще раз.")
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data=f"claim_lead_{lead_id}"))
+
+    await bot.send_message(
+        chat_id=AGENT_WORK_CHAT_ID,
+        text=(
+            f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД (Об'єкт №{obj_id}) 😱😱\n\n"
+            f"👤 **Клієнт:** {client_name}\n"
+            f"📞 **Телефон:** `{client_phone}`\n"
+            f"💬 **Telegram:** @{message.from_user.username if message.from_user.username else 'не вказано'}"
+        ),
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+
+    await message.answer("✅ **Дякуємо!** Вашу заявку успішно надіслано агентам. Менеджер зв'яжеться з вами найближчим часом.", parse_mode="Markdown")
+    await state.clear()
 
 @dp.callback_query(F.data == "add_object")
 async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
@@ -370,15 +296,17 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         maps_query = parsed_info['address'] if parsed_info['address'] else "Дніпро"
         maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query)}"
         
-        render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
-        if not render_url or not render_url.startswith("http"):
-            render_url = "https://fufelhui.onrender.com"
-        webapp_url = f"{render_url.rstrip('/')}/form/{obj_id}"
+        # Получаем имя бота динамически или подставляем твоего бота
+        bot_info = await bot.get_me()
+        bot_username = bot_info.username
+        
+        # Прямая ссылка на ЛС бота с передачей ID объекта через start-параметр
+        booking_url = f"https://t.me/{bot_username}?start=form_{obj_id}"
 
         builder = InlineKeyboardBuilder()
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
-            types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=webapp_url))
+            types.InlineKeyboardButton(text="📝 Записатися на перегляд", url=booking_url)
         )
 
         await bot.send_message(
@@ -536,7 +464,6 @@ async def handle_telegram_webhook(request):
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle_keep_alive)
-    app.router.add_get("/form/{obj_id}", handle_webapp_form)
     app.router.add_post("/webhook", handle_telegram_webhook)
     
     runner = web.AppRunner(app)
