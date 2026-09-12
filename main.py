@@ -1,12 +1,10 @@
 import os
 import logging
 import asyncio
-import urllib.parse
 import re
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
-from aiohttp import web
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -29,99 +27,8 @@ dp = Dispatcher(storage=storage)
 telegraph = Telegraph()
 telegraph.create_account(short_name='NestimaRealEstate')
 
-ACTIVE_AGENTS = [11111111, 22222222] 
-reports_storage = {} 
-
 class FormStates(StatesGroup):
     waiting_for_object_data = State()
-
-async def handle_keep_alive(request):
-    return web.Response(text="I am alive and working 24/7!")
-
-# Веб-сервер для приема данных из Web App формы прямо из канала
-async def handle_webapp_data(request):
-    try:
-        data = await request.json()
-        obj_id = data.get("obj_id")
-        client_name = data.get("name")
-        client_phone = data.get("phone")
-        
-        if not obj_id or not client_name or not client_phone:
-            return web.json_response({"status": "error", "message": "Missing data"}, status=400)
-
-        # Отправляем заявку в рабочий чат риелторов
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data=f"claim_lead_{obj_id}_{client_phone}"))
-
-        await bot.send_message(
-            chat_id=AGENT_WORK_CHAT_ID,
-            text=(
-                f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД (Об'єкт №{obj_id}) 😱😱\n\n"
-                f"👤 **Клієнт:** {client_name}\n"
-                f"📞 **Телефон:** `{client_phone}`"
-            ),
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
-        return web.json_response({"status": "ok"})
-    except Exception as e:
-        logging.error(f"Webapp data error: {e}")
-        return web.json_response({"status": "error", "message": str(e)}, status=500)
-
-# HTML-страница формы, которая открывается во всплывающем окне Web App внутри канала
-async def handle_form_page(request):
-    obj_id = request.match_info.get("obj_id")
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="uk">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Запис на перегляд</title>
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
-        <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0f0f0f; color: #fff; padding: 20px; }}
-            .container {{ max-width: 400px; margin: 0 auto; background: #1a1a1a; padding: 20px; border-radius: 12px; }}
-            input {{ width: 100%; padding: 12px; margin: 10px 0; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 8px; box-sizing: border-box; font-size: 16px; }}
-            button {{ width: 100%; padding: 14px; background: #2ea6ff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; margin-top: 10px; }}
-            button:active {{ background: #1885d1; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h2>📝 Запис на перегляд</h2>
-            <p>Введіть ваші дані для зв'язку:</p>
-            <input type="text" id="name" placeholder="Ваше ім'я" required>
-            <input type="tel" id="phone" placeholder="Номер телефону (+380...)" required>
-            <button onclick="submitForm()">Надіслати заявку</button>
-        </div>
-        <script>
-            let tg = window.Telegram.WebApp;
-            tg.expand();
-            function submitForm() {{
-                let name = document.getElementById('name').value;
-                let phone = document.getElementById('phone').value;
-                if(!name || !phone) {{
-                    alert('Будь ласка, заповніть всі поля!');
-                    return;
-                }}
-                fetch('/api/submit', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ obj_id: "{obj_id}", name: name, phone: phone }})
-                }}).then(res => {{
-                    if(res.ok) {{
-                        tg.close();
-                    }} else {{
-                        alert('Помилка відправки. Спробуйте ще раз.');
-                    }}
-                }});
-            }}
-        </script>
-    </body>
-    </html>
-    """
-    return web.Response(text=html_content, content_type='text/html')
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -131,7 +38,6 @@ async def cmd_start(message: types.Message):
 
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="➕ Додати об'єкт за посиланням", callback_data="add_object"))
-    builder.row(types.InlineKeyboardButton(text="📊 Переглянути звіти за сьогодні", callback_data="view_reports"))
     
     await message.answer(
         "Вітаю, босе! Це пульт управління агентством **Nestima**.\nОбери необхідну дію:",
@@ -263,13 +169,10 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         maps_query = parsed_info['address'] if parsed_info['address'] else "Дніпро"
         maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query)}"
         
-        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://fufelhui.onrender.com").rstrip('/')
-        webapp_url = f"{render_url}/form/{obj_id}"
-
         builder = InlineKeyboardBuilder()
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
-            types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=webapp_url))
+            types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data=f"book_{obj_id}")
         )
 
         await bot.send_message(
@@ -295,58 +198,53 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             work_media_group = [types.InputMediaPhoto(media=p) for p in parsed_info["photos"][:10]]
             await bot.send_media_group(chat_id=AGENT_WORK_CHAT_ID, media=work_media_group)
 
-        await message.answer(f"✅ Успішно! Чистий пост опубліковано у канал через Web App форму.")
+        await message.answer(f"✅ Успішно! Пост опубліковано у канал.")
     except Exception as e:
         await message.answer(f"❌ Помилка: {e}")
     
     await state.clear()
 
+@dp.callback_query(F.data.startswith("book_"))
+async def process_channel_booking(callback: types.CallbackQuery):
+    obj_id = callback.data.split("_")[1]
+    user = callback.from_user
+    
+    client_name = user.full_name
+    client_username = f"@{user.username}" if user.username else "Не вказано"
+
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data=f"claim_lead_{obj_id}_{user.id}"))
+
+    await bot.send_message(
+        chat_id=AGENT_WORK_CHAT_ID,
+        text=(
+            f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД (Об'єкт №{obj_id}) 😱😱\n\n"
+            f"👤 **Клієнт:** {client_name}\n"
+            f"💬 **Telegram:** {client_username}"
+        ),
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+
+    await callback.answer("✅ Заявку надіслано! Ріелтор зв'яжеться з вами.", show_alert=True)
+
 @dp.callback_query(F.data.startswith("claim_lead_"))
 async def claim_lead_action(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     obj_id = parts[2]
-    client_phone = parts[3]
+    client_id = parts[3]
     agent_name = callback.from_user.full_name
 
     await callback.message.edit_text(
-        text=f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД (Об'єкт №{obj_id}) 😱😱\n\n🔒 **Заброньовано агентом:** {agent_name}\n📞 **Телефон клієнта:** `{client_phone}`",
+        text=f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД (Об'єкт №{obj_id}) 😱😱\n\n🔒 **Заброньовано агентом:** {agent_name}\n🆔 **ID клієнта:** `{client_id}`",
         reply_markup=None,
         parse_mode="Markdown"
     )
     await callback.answer("✅ Заявку успішно закріплено за вами.", show_alert=True)
 
-# Обработка входящих вебхуков от Telegram
-async def handle_telegram_webhook(request):
-    try:
-        data = await request.json()
-        telegram_update = types.Update(**data)
-        await dp.feed_update(bot=bot, update=telegram_update)
-        return web.Response(text="OK")
-    except Exception as e:
-        logging.error(f"Webhook error: {e}")
-        return web.Response(status=500)
-
 async def main():
-    render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
-    if render_url:
-        webhook_url = f"{render_url.rstrip('/')}/webhook"
-        await bot.set_webhook(webhook_url)
-        logging.info(f"Webhook successfully set to {webhook_url}")
-
-    app = web.Application()
-    app.router.add_get("/", handle_keep_alive)
-    app.router.add_get("/form/{obj_id}", handle_form_page)
-    app.router.add_post("/api/submit", handle_webapp_data)
-    app.router.add_post("/webhook", handle_telegram_webhook)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logging.info(f"Web server started on port {port}")
-    
-    await asyncio.Event().wait()
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
