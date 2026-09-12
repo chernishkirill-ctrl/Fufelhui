@@ -113,7 +113,7 @@ async def handle_form_page(request):
                     if(res.ok) {{
                         tg.close();
                     }} else {{
-                        alert('Поשлка відправки. Спробуйте ще раз.');
+                        alert('Помилка відправки. Спробуйте ще раз.');
                     }}
                 }});
             }}
@@ -242,7 +242,7 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         telegraph_html += f"<h4>Детальний опис та характеристики:</h4>"
         telegraph_html += f"<p>{parsed_info['description'].replace(chr(10), '<br>')}</p>"
         
-        response = telegraph.create_page(title=f"Об'єкт №{obj_id}", html_content=telegraph_html)
+        response = telegraph.create_page(title=f"Obj №{obj_id}", html_content=telegraph_html)
         page_path = response.get('path') if isinstance(response, dict) else response
         telegraph_url = f"https://telegra.ph/{page_path}"
 
@@ -263,7 +263,6 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         maps_query = parsed_info['address'] if parsed_info['address'] else "Дніпро"
         maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query)}"
         
-        # Получаем URL вашего сервера на Render для формирования Web App ссылки
         render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://fufelhui.onrender.com").rstrip('/')
         webapp_url = f"{render_url}/form/{obj_id}"
 
@@ -316,11 +315,29 @@ async def claim_lead_action(callback: types.CallbackQuery):
     )
     await callback.answer("✅ Заявку успішно закріплено за вами.", show_alert=True)
 
-async def start_web_server():
+# Обработка входящих вебхуков от Telegram
+async def handle_telegram_webhook(request):
+    try:
+        data = await request.json()
+        telegram_update = types.Update(**data)
+        await dp.feed_update(bot=bot, update=telegram_update)
+        return web.Response(text="OK")
+    except Exception as e:
+        logging.error(f"Webhook error: {e}")
+        return web.Response(status=500)
+
+async def main():
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+    if render_url:
+        webhook_url = f"{render_url.rstrip('/')}/webhook"
+        await bot.set_webhook(webhook_url)
+        logging.info(f"Webhook successfully set to {webhook_url}")
+
     app = web.Application()
     app.router.add_get("/", handle_keep_alive)
     app.router.add_get("/form/{obj_id}", handle_form_page)
     app.router.add_post("/api/submit", handle_webapp_data)
+    app.router.add_post("/webhook", handle_telegram_webhook)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -328,16 +345,8 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     logging.info(f"Web server started on port {port}")
-
-async def main():
-    render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
-    if render_url:
-        await bot.set_webhook(f"{render_url.rstrip('/')}/webhook")
-
-    asyncio.create_task(start_web_server())
     
-    # Режим поллинга для администратора
-    await dp.start_polling(bot)
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
