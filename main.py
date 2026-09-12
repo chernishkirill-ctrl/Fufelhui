@@ -20,8 +20,8 @@ logging.basicConfig(level=logging.INFO)
 
 # Конфигурация
 TOKEN = "8992791495:AAFRweBImbJDNYahSlwX3LOClEbSEl8yfDI"
-PUBLIC_CHANNEL_ID = "-1003889243376"       # Публичный канал (только чистая презентация)
-AGENT_WORK_CHAT_ID = -1004428877093       # Рабочий чат агентов (всей базы с телефонами)
+PUBLIC_CHANNEL_ID = "-1003889243376"       # Публичный канал (мини-презентация)
+AGENT_WORK_CHAT_ID = -1004428877093       # Рабочий чат агентов (база с телефонами)
 MY_ADMIN_ID = 8799145351
 
 bot = Bot(token=TOKEN)
@@ -228,7 +228,7 @@ async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
         return
     await callback.message.answer(
         "Надішли мені **посилання на оголошення**.\n"
-        "Бот спарсить параметри, сформує ідеальну публікацію без зайвої інформації та створить картку для агенств!"
+        "Бот спарсить параметри, сформує ідеальну публікацію та створить картку для агенств!"
     )
     await state.set_state(FormStates.waiting_for_object_data)
     await callback.answer()
@@ -361,29 +361,33 @@ async def handle_object_data(message: types.Message, state: FSMContext):
     try:
         obj_id = int(datetime.now().timestamp()) % 100000
 
-        # Страница Telegraph для публичного канала (только квартира, без телефонов владельца)
+        # Вся подробная информация и описание уходят на страницу Telegraph
         telegraph_html = f"<h3>{parsed_info['title']}</h3>"
         for p in parsed_info["photos"]:
             telegraph_html += f'<img src="{p}"/>'
-        telegraph_html += f"<p>{parsed_info['description'].replace(chr(10), '<br>')}</p><p><b>Локація:</b> {parsed_info['address']}</p>"
+        
+        telegraph_html += f"<p><b>Локація:</b> {parsed_info['address']}</p>"
+        telegraph_html += f"<p><b>Ціна:</b> {parsed_info['price']}</p>"
+        if parsed_info['floor']:
+            telegraph_html += f"<p><b>Поверх:</b> {parsed_info['floor']}</p>"
+            
+        telegraph_html += f"<h4>Детальний опис та характеристики:</h4>"
+        telegraph_html += f"<p>{parsed_info['description'].replace(chr(10), '<br>')}</p>"
         
         response = telegraph.create_page(title=f"Об'єкт №{obj_id}", html_content=telegraph_html)
         page_path = response.get('path') if isinstance(response, dict) else response
         telegraph_url = f"https://telegra.ph/{page_path}"
 
-        # СТРОГО ЧИСТЫЙ ПОСТ ДЛЯ ПУБЛИЧНОГО КАНАЛА
+        # МИНИМАЛИСТИЧНЫЙ ПОСТ ДЛЯ ПУБЛИЧНОГО КАНАЛА
         channel_parts = []
-        if parsed_info['rooms']: channel_parts.append(f"{parsed_info['rooms']}")
-        if parsed_info['area']: channel_parts.append(f"✏️ {parsed_info['area']}")
-        if parsed_info['floor']: channel_parts.append(f"🔺 Поверх: {parsed_info['floor']}")
-        if parsed_info['bank']: channel_parts.append(f"🚣 {parsed_info['bank']}")
-        if parsed_info['address']: channel_parts.append(f"📍 {parsed_info['address']}")
+        if parsed_info['rooms']: channel_parts.append(f"🏠 {parsed_info['rooms']}")
+        if parsed_info['area']: channel_parts.append(f"📐 {parsed_info['area']}")
         if parsed_info['price']: channel_parts.append(f"💵 {parsed_info['price']}")
+        if parsed_info['address']: channel_parts.append(f"📍 {parsed_info['address']}")
 
         channel_text = (
             "\n".join(channel_parts) + 
-            f"\n\n📝 **Опис:**\n{parsed_info['description']}\n\n"
-            f"📄 **Деталі та фото:** {telegraph_url}\n\n"
+            f"\n\n📄 **Всі деталі та фото:** {telegraph_url}\n\n"
             f"{parsed_info['district_hashtag']}\n"
             f"{parsed_info['bank_hashtag']}\n"
             f"#Nestima"
@@ -396,10 +400,10 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://fufelhui.onrender.com")
         webapp_url = f"{render_url}/form/{obj_id}"
 
-        # ИСПРАВЛЕНИЕ: Используем url-кнопку вместо web_app, чтобы обйти ограничение каналов Telegram и убрать ошибку
+        # Возвращаем рабочую кнопку web_app для открытия формы прямо в Telegram
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
-            types.InlineKeyboardButton(text="📝 Записатися на перегляд", url=webapp_url)
+            types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=webapp_url))
         )
 
         # Публикуем в публичный канал
