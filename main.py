@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import re
+import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
