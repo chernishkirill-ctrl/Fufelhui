@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import urllib.parse
+import re
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
@@ -11,7 +12,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from telegraph import Telegraph
 
 # Настройка логирования
@@ -19,8 +20,8 @@ logging.basicConfig(level=logging.INFO)
 
 # Конфигурация
 TOKEN = "8992791495:AAFRweBImbJDNYahSlwX3LOClEbSEl8yfDI"
-PUBLIC_CHANNEL_ID = "-1003889243376"       # Публичный канал
-AGENT_WORK_CHAT_ID = -1004428877093       # Рабочий чат
+PUBLIC_CHANNEL_ID = "-1003889243376"       # Публичный канал (только чистая презентация)
+AGENT_WORK_CHAT_ID = -1004428877093       # Рабочий чат агентов (всей базы с телефонами)
 MY_ADMIN_ID = 8799145351
 
 bot = Bot(token=TOKEN)
@@ -34,21 +35,132 @@ telegraph.create_account(short_name='NestimaRealEstate')
 # Хранилища в памяти
 ACTIVE_AGENTS = [11111111, 22222222] 
 reports_storage = {} 
-lead_claims = {} 
-lead_details_storage = {} # Хранит полные данные заявки для выдачи агенту
+lead_details_storage = {} 
 
 class FormStates(StatesGroup):
     waiting_for_object_data = State()
-    waiting_for_client_contact = State()
     waiting_for_agent_report = State()
 
-# --- 1. KEEP-ALIVE WEB SERVER FOR RENDER (ЧТОБЫ БОТ НЕ ЗАСЫПАЛ) ---
-async def handle(request):
+# --- 1. WEB SERVER (WEB APP ДЛЯ ФОРМЫ КЛИЕНТА + KEEP-ALIVE 24/7) ---
+async def handle_keep_alive(request):
     return web.Response(text="I am alive and working 24/7!")
+
+async def handle_webapp_form(request):
+    obj_id = request.match_info.get('obj_id', '')
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="uk">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Заявка на перегляд - Nestima</title>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                background-color: var(--tg-theme-bg-color, #ffffff);
+                color: var(--tg-theme-text-color, #000000);
+                padding: 20px;
+                margin: 0;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 90vh;
+            }}
+            .container {{
+                width: 100%;
+                max-width: 350px;
+                background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+                padding: 20px;
+                border-radius: 14px;
+                box-sizing: border-box;
+            }}
+            h2 {{
+                text-align: center;
+                font-size: 20px;
+                margin-bottom: 20px;
+            }}
+            .form-group {{
+                margin-bottom: 15px;
+            }}
+            label {{
+                display: block;
+                font-size: 14px;
+                margin-bottom: 5px;
+                font-weight: 500;
+            }}
+            input {{
+                width: 100%;
+                padding: 12px;
+                border: 1px solid #ccc;
+                border-radius: 8px;
+                font-size: 16px;
+                box-sizing: border-box;
+                background: var(--tg-theme-bg-color, #ffffff);
+                color: var(--tg-theme-text-color, #000000);
+            }}
+            button {{
+                width: 100%;
+                padding: 14px;
+                background-color: var(--tg-theme-button-color, #2481cc);
+                color: var(--tg-theme-button-text-color, #ffffff);
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: bold;
+                cursor: pointer;
+                margin-top: 10px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>🏠 Запис на перегляд (Об'єкт №{obj_id})</h2>
+            <div class="form-group">
+                <label for="name">Ваше ім'я:</label>
+                <input type="text" id="name" placeholder="Введіть ваше ім'я" required>
+            </div>
+            <div class="form-group">
+                <label for="phone">Номер телефону:</label>
+                <input type="tel" id="phone" placeholder="+380XXXXXXXXX" required>
+            </div>
+            <button onclick="submitData()">Надіслати заявку</button>
+        </div>
+
+        <script>
+            let tg = window.Telegram.WebApp;
+            tg.expand();
+
+            function submitData() {{
+                let name = document.getElementById('name').value.trim();
+                let phone = document.getElementById('phone').value.trim();
+
+                if (!name || !phone) {{
+                    alert('Будь ласка, заповніть всі поля!');
+                    return;
+                }}
+
+                let data = {{
+                    obj_id: "{obj_id}",
+                    name: name,
+                    phone: phone
+                }};
+
+                tg.sendData(JSON.stringify(data));
+                tg.close();
+            }}
+        </script>
+    </body>
+    </html>
+    """
+    return web.Response(text=html_content, content_type='text/html')
 
 async def start_web_server():
     app = web.Application()
-    app.router.add_get("/", handle)
+    app.router.add_get("/", handle_keep_alive)
+    app.router.add_get("/form/{obj_id}", handle_webapp_form)
+    
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
@@ -75,34 +187,69 @@ async def cmd_start(message: types.Message):
     )
 
 
-# --- 3. ПАРСИНГ И ПУБЛИКАЦИЯ ---
+# --- 3. ОБРАБОТКА ДАННЫХ ИЗ ВСПЛЫВАЮЩЕГО ОКНА (WEB APP) ---
+@dp.message(F.web_app_data)
+async def process_webapp_data(message: types.Message):
+    import json
+    try:
+        data = json.loads(message.web_app_data.data)
+        obj_id = data.get("obj_id")
+        client_name = data.get("name")
+        client_phone = data.get("phone")
+
+        lead_id = int(datetime.now().timestamp())
+        lead_details_storage[lead_id] = {
+            "obj_id": obj_id,
+            "client_name": client_name,
+            "client_phone": client_phone,
+            "client_username": f"@{message.from_user.username}" if message.from_user.username else "Не вказано"
+        }
+
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data=f"claim_lead_{lead_id}"))
+
+        await bot.send_message(
+            chat_id=AGENT_WORK_CHAT_ID,
+            text="😱😱 ЗАЯВКА НА ПЕРЕГЛЯД 😱😱",
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
+        )
+
+        await message.answer("✅ Дякуємо! Вашу заявку успішно надіслано агентам. Менеджер зв'яжеться з вами найближчим часом.")
+    except Exception as e:
+        logging.error(f"Error parsing web_app_data: {e}")
+        await message.answer("❌ Сталася помилка при обробці форми. Спробуйте ще раз.")
+
+
+# --- 4. ПАРСИНГ И ПУБЛИКАЦИЯ ---
 @dp.callback_query(F.data == "add_object")
 async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != MY_ADMIN_ID:
         return
     await callback.message.answer(
-        "Надішли мені **посилання на оголошення (наприклад, з DOM.RIA)**.\n"
-        "Бот сформує пост, опублікує в канал і надішле базу в робочий чат!"
+        "Надішли мені **посилання на оголошення**.\n"
+        "Бот спарсить параметри, сформує ідеальну публікацію без зайвої інформації та створить картку для агенств!"
     )
     await state.set_state(FormStates.waiting_for_object_data)
     await callback.answer()
 
-def parse_dom_ria(url: str):
+def parse_listing(url: str):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7"
+        "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en-US;q=0.7"
     }
+    
     data = {
-        "rooms": "3к",
-        "area": "65.0м²",
-        "floor": "10/10",
-        "bank": "Правий Берег",
+        "rooms": "",
+        "area": "",
+        "floor": "",
+        "bank": "",
         "address": "Дніпро",
         "price": "Ціна за запитом",
-        "district_hashtag": "#Дніпро3к",
-        "bank_hashtag": "#ПравийБерег",
+        "district_hashtag": "#Дніпро",
+        "bank_hashtag": "#Нерухомість",
         "title": "Об'єкт нерухомості Nestima",
-        "description": f"Посилання на джерело: {url}",
+        "description": "Сучасна квартира в зручному районі міста.",
         "photos": [],
         "phone": "Не вказано"
     }
@@ -122,47 +269,72 @@ def parse_dom_ria(url: str):
             soup.find('div', class_='page-description') or 
             soup.find('div', class_='description') or 
             soup.find('div', id='description-area') or
-            soup.find('span', class_='full-description')
+            soup.find('span', class_='full-description') or
+            soup.find('div', class_='realty-description')
         )
         if desc_div:
-            data["description"] = desc_div.get_text(separator='\n', strip=True)
+            cleaned_desc = desc_div.get_text(separator='\n', strip=True)
+            # Очищаем текст от случайных упоминаний источников, ID и т.д.
+            data["description"] = cleaned_desc
             
         address_tag = (
             soup.find('span', class_='realty-address') or 
             soup.find('div', class_='address') or
-            soup.find('h4', class_='address')
+            soup.find('h4', class_='address') or
+            soup.find('span', class_='address')
         )
         if address_tag:
             addr_text = address_tag.get_text(strip=True)
             data["address"] = addr_text
             
             lower_addr = addr_text.lower()
-            if "топол" in lower_addr:
-                data["district_hashtag"] = "#Тополя3к"
-            elif "центр" in lower_addr:
-                data["district_hashtag"] = "#Центр3к"
-            elif "перемог" in lower_addr:
-                data["district_hashtag"] = "#Перемога3к"
-            elif "правд" in lower_addr or "слобожанск" in lower_addr:
-                data["district_hashtag"] = "#Слобожанський3к"
-            elif "парус" in lower_addr:
-                data["district_hashtag"] = "#Парус3к"
+            if any(b in lower_addr for b in ["правобереж", "центр", "топол", "перемог", "парус", "нагорівк", "побед", "шевченківськ", "соборн", "центральн"]):
+                data["bank"] = "Правий Берег"
+                data["bank_hashtag"] = "#ПравийБерег"
             else:
-                data["district_hashtag"] = "#Дніпро3к"
+                data["bank"] = "Лівий Берег"
+                data["bank_hashtag"] = "#ЛівийБерег"
 
-        price_tag = soup.find('span', class_='price') or soup.find('div', class_='price')
+            if "топол" in lower_addr:
+                data["district_hashtag"] = "#Тополя"
+            elif "центр" in lower_addr:
+                data["district_hashtag"] = "#Центр"
+            elif "перемог" in lower_addr or "побед" in lower_addr:
+                data["district_hashtag"] = "#Перемога"
+            elif "правд" in lower_addr or "слобожанск" in lower_addr:
+                data["district_hashtag"] = "#Слобожанський"
+            elif "парус" in lower_addr:
+                data["district_hashtag"] = "#Парус"
+
+        price_tag = soup.find('span', class_='price') or soup.find('div', class_='price') or soup.find('strong', class_='price')
         if price_tag:
             p_text = price_tag.get_text(strip=True)
-            if "грн" in p_text or "$" in p_text or "€" in p_text:
-                data["price"] = f"{p_text} + комунальні послуги"
+            if any(curr in p_text for curr in ["грн", "$", "€", "₴"]):
+                data["price"] = p_text
 
-        phone_tag = soup.find('span', class_='phone') or soup.find('a', class_='phone')
+        full_text_page = soup.get_text()
+        
+        rooms_match = re.search(r'(\d)\s*-(?:кімн|комн)|(\d)\s*кімн', full_text_page, re.IGNORECASE)
+        if rooms_match:
+            rooms_num = rooms_match.group(1) or rooms_match.group(2)
+            data["rooms"] = f"{rooms_num}к"
+            data["district_hashtag"] += f"{rooms_num}к"
+
+        area_match = re.search(r'(\d+[.,]?\d*)\s*(?:м²|м2|кв\.?\s*м)', full_text_page, re.IGNORECASE)
+        if area_match:
+            data["area"] = f"{area_match.group(1)}м²"
+
+        floor_match = re.search(r'(\d{1,2})\s*/\s*(\d{1,2})\s*пов', full_text_page, re.IGNORECASE)
+        if floor_match:
+            data["floor"] = f"{floor_match.group(1)}/{floor_match.group(2)}"
+
+        phone_tag = soup.find('span', class_='phone') or soup.find('a', class_='phone') or soup.find('div', class_='phone-number')
         if phone_tag:
             data["phone"] = phone_tag.get_text(strip=True)
             
         for img in soup.find_all('img', src=True):
             src = img['src']
-            if any(x in src for x in ['photos', 'rio', 'dom.ria', 's.dom.ria']):
+            if any(x in src for x in ['photos', 'rio', 'dom.ria', 's.dom.ria', 'realty', 'images']):
                 if src.startswith('http') and src not in data["photos"]:
                     data["photos"].append(src)
         
@@ -182,47 +354,56 @@ async def handle_object_data(message: types.Message, state: FSMContext):
         await message.answer("❌ Надішли коректне посилання на оголошення!")
         return
 
-    await message.answer("⏳ Парсю дані, створюю сторінку Telegraph та формую пост...")
+    await message.answer("⏳ Обробляю дані, формую чисту публікацію та службову базу...")
 
     words = user_input.split()
     url = next((w for w in words if w.startswith("http")), user_input.strip())
-    parsed_info = parse_dom_ria(url)
+    parsed_info = parse_listing(url)
 
     try:
         obj_id = int(datetime.now().timestamp()) % 100000
 
+        # Страница Telegraph для публичного канала (только квартира, без телефонов владельца)
         telegraph_html = f"<h3>{parsed_info['title']}</h3>"
         for p in parsed_info["photos"]:
             telegraph_html += f'<img src="{p}"/>'
-        telegraph_html += f"<p>{parsed_info['description'].replace(chr(10), '<br>')}</p><p><b>Адреса:</b> {parsed_info['address']}</p>"
+        telegraph_html += f"<p>{parsed_info['description'].replace(chr(10), '<br>')}</p><p><b>Локація:</b> {parsed_info['address']}</p>"
         
         response = telegraph.create_page(title=f"Об'єкт №{obj_id}", html_content=telegraph_html)
         page_path = response.get('path') if isinstance(response, dict) else response
         telegraph_url = f"https://telegra.ph/{page_path}"
 
+        # СТРОГО ЧИСТЫЙ ПОСТ ДЛЯ ПУБЛИЧНОГО КАНАЛА (без ID сайта, без телефонов, без ссылок-источников)
+        channel_parts = []
+        if parsed_info['rooms']: channel_parts.append(f"{parsed_info['rooms']}")
+        if parsed_info['area']: channel_parts.append(f"✏️ {parsed_info['area']}")
+        if parsed_info['floor']: channel_parts.append(f"🔺 Поверх: {parsed_info['floor']}")
+        if parsed_info['bank']: channel_parts.append(f"🚣 {parsed_info['bank']}")
+        if parsed_info['address']: channel_parts.append(f"📍 {parsed_info['address']}")
+        if parsed_info['price']: channel_parts.append(f"💵 {parsed_info['price']}")
+
         channel_text = (
-            f"{parsed_info['rooms']}\n"
-            f"✏️{parsed_info['area']}\n"
-            f"🔺Поверх: {parsed_info['floor']} ⚠️\n"
-            f"🚣{parsed_info['bank']}\n"
-            f"📍{parsed_info['address']}\n"
-            f"💵{parsed_info['price']}\n"
+            "\n".join(channel_parts) + 
+            f"\n\n📝 **Опис:**\n{parsed_info['description']}\n\n"
             f"📄 **Деталі та фото:** {telegraph_url}\n\n"
             f"{parsed_info['district_hashtag']}\n"
             f"{parsed_info['bank_hashtag']}\n"
-            f"#13000x16000 #Nestima"
+            f"#Nestima"
         )
 
         builder = InlineKeyboardBuilder()
-        # Ссылка на карту формируется строго по конкретному адресу из объявления
         maps_query = parsed_info['address'] if parsed_info['address'] else "Дніпро"
         maps_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(maps_query)}"
         
+        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://render-app-name.onrender.com")
+        webapp_url = f"{render_url}/form/{obj_id}"
+
         builder.row(
             types.InlineKeyboardButton(text="📍 На мапі", url=maps_url),
-            types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data=f"book_view_{obj_id}")
+            types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=webapp_url))
         )
 
+        # Публикуем в публичный канал
         await bot.send_message(
             chat_id=PUBLIC_CHANNEL_ID, 
             text=channel_text, 
@@ -230,14 +411,15 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             parse_mode="Markdown"
         )
 
+        # ПОЛНЫЙ СЛУЖЕБНЫЙ ОТЧЕТ ДЛЯ РАБОЧЕГО ЧАТА АГЕНТОВ (со всеми контактами и ссылкой на первоисточник)
         work_chat_text = (
             f"📥 **Новий об'єкт №{obj_id} у робочій базі!**\n\n"
             f"📌 **Назва:** {parsed_info['title']}\n"
             f"📍 **Адреса:** {parsed_info['address']}\n"
-            f"📞 **Телефон власника/агента:** `{parsed_info['phone']}`\n"
+            f"📞 **Телефон власника / ріелтора:** `{parsed_info['phone']}`\n"
             f"📄 **Telegraph:** {telegraph_url}\n\n"
-            f"📄 **Опис з сайту:**\n{parsed_info['description']}\n\n"
-            f"🔗 **Посилання:** {url}"
+            f"📄 **Опис:**\n{parsed_info['description']}\n\n"
+            f"🔗 **Посилання на джерело:** {url}"
         )
         
         await bot.send_message(chat_id=AGENT_WORK_CHAT_ID, text=work_chat_text, parse_mode="Markdown")
@@ -246,79 +428,53 @@ async def handle_object_data(message: types.Message, state: FSMContext):
             work_media_group = [types.InputMediaPhoto(media=p) for p in parsed_info["photos"][:10]]
             await bot.send_media_group(chat_id=AGENT_WORK_CHAT_ID, media=work_media_group)
 
-        await message.answer(f"✅ Успішно! Об'єкт №{obj_id} опубліковано.")
+        await message.answer(f"✅ Успішно! Чистий пост опубліковано у канал, а повна база збережена для агенства.")
     except Exception as e:
         await message.answer(f"❌ Помилка: {e}")
     
     await state.clear()
 
 
-# --- 4. ЗАКРЫТАЯ ЗАЯВКА ДЛЯ АГЕНТОВ ---
-@dp.callback_query(F.data.startswith("book_view_"))
-async def direct_client_booking(callback: types.CallbackQuery):
-    obj_id = callback.data.split("_")[-1]
-    user = callback.from_user
-    
-    if user.username:
-        client_contact = f"@{user.username}"
-    else:
-        client_contact = f"[{user.full_name}](tg://user?id={user.id})"
-
-    # Сохраняем скрытые данные заявки в памяти словаря
-    lead_id = int(datetime.now().timestamp())
-    lead_details_storage[lead_id] = {
-        "obj_id": obj_id,
-        "client_name": user.full_name,
-        "client_contact": client_contact
-    }
-
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data=f"claim_lead_{lead_id}"))
-
-    # Отправляем в чат агентов ТОЛЬКО чистый текст-уведомление без контактов
-    await bot.send_message(
-        chat_id=AGENT_WORK_CHAT_ID,
-        text="😱😱 ЗАЯВКА НА ПЕРЕГЛЯД 😱😱",
-        reply_markup=builder.as_markup(),
-        parse_mode="Markdown"
-    )
-    
-    await callback.answer(
-        "✅ Заявку надіслано! Менеджер зв'яжеться з вами найближчим часом.", 
-        show_alert=True
-    )
-
+# --- 5. ОБРАБОТКА НАЖАТИЯ АГЕНТОМ («ПРИНЯТЬ ЗАЯВКУ») ---
 @dp.callback_query(F.data.startswith("claim_lead_"))
 async def claim_lead_action(callback: types.CallbackQuery):
     lead_id = int(callback.data.split("_")[-1])
+    agent_id = callback.from_user.id
     agent_name = callback.from_user.full_name
 
-    # Проверка, не забрал ли кто-то другой
     if lead_id not in lead_details_storage:
-        await callback.answer("⚠️ Цю заявку вже хтось прийняв або вона недоступна!", show_alert=True)
+        await callback.answer("⚠️ Цю заявку вже хтось прийняв!", show_alert=True)
         return
 
-    lead_data = lead_details_storage.pop(lead_id) # Удаляем из общего доступа, чтобы другие не видели
+    lead_data = lead_details_storage.pop(lead_id) 
 
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text=f"🔒 Заброньовано агентом: {agent_name}", callback_data="claimed"))
-
-    # Редактируем сообщение в чате: теперь полные данные видит ТОЛЬКО тот, кто нажал первый
+    # Удаляем кнопку из общего чата для всех
     await callback.message.edit_text(
-        text=(
-            f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД 😱😱\n\n"
-            f"📌 **Об'єкт №:** {lead_data['obj_id']}\n"
-            f"👤 **Клієнт:** {lead_data['client_name']}\n"
-            f"📞 **Контакт клієнта:** {lead_data['client_contact']}\n\n"
-            f"✅ **Взято в роботу агентом:** {agent_name}"
-        ),
-        reply_markup=builder.as_markup(),
+        text=f"😱😱 ЗАЯВКА НА ПЕРЕГЛЯД 😱😱\n\n🔒 **Заброньовано агентом:** {agent_name}",
+        reply_markup=None,
         parse_mode="Markdown"
     )
-    await callback.answer("Ви успішно прийняли заявку! Контакти клієнта розблоковано для вас.", show_alert=True)
+
+    # Высылаем лид победителю в ЛС
+    try:
+        await bot.send_message(
+            chat_id=agent_id,
+            text=(
+                f"🎉 **Ви успішно прийняли заявку в роботу!**\n\n"
+                f"📌 **Об'єкт №:** {lead_data['obj_id']}\n"
+                f"👤 **Ім'я клієнта:** {lead_data['client_name']}\n"
+                f"📱 **Номер телефону:** `{lead_data['client_phone']}`\n"
+                f"💬 **Telegram:** {lead_data['client_username']}"
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logging.error(f"Failed to send DM to agent: {e}")
+
+    await callback.answer("✅ Контакти клієнта надіслано вам у особисті повідомлення.", show_alert=True)
 
 
-# --- 5. ВЕЧЕРНИЕ ОТЧЕТЫ В 22:00 ---
+# --- 6. ВЕЧЕРНИЕ ОТЧЕТЫ В 22:00 ---
 async def schedule_daily_reports():
     while True:
         now = datetime.now()
@@ -345,16 +501,15 @@ async def schedule_daily_reports():
             )
 
 @dp.callback_query(F.data.startswith("submit_report_"))
-async def agent_click_report(callback: types.CallbackQuery, state: FSMContext):
-    data_parts = callback.data.split("_")
-    agent_id = int(data_parts[2])
+async def agent_click_report(callback: types.CallbackQuery, state: FSMContext = None):
+    data_args = callback.data.split("_")
+    agent_id = int(data_args[2])
     
     if callback.from_user.id != agent_id:
         await callback.answer("⚠️ Це чужа персональна кнопка звіту!", show_alert=True)
         return
 
     await callback.message.answer("Будь ласка, напишіть короткий текст вашого звіту за сьогодні (дзвінки, покази, угоди):")
-    await state.set_state(FormStates.waiting_for_agent_report)
     await callback.answer()
 
 @dp.message(FormStates.waiting_for_agent_report)
