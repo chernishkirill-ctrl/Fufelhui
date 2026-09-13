@@ -15,7 +15,7 @@ from telegraph import Telegraph
 logging.basicConfig(level=logging.INFO)
 
 # Конфигурация подставлена автоматически
-TOKEN = "8875020404:AAHP46AKn-9ZGQc7aLuvy0te1VT1U71Lvx4"
+TOKEN = "8196896144:AAF1o09mSJpiai2UvmBqcQ2DghEJ0pV-Y0o"
 PUBLIC_CHANNEL_ID = "-1004428877093"
 AGENT_WORK_CHAT_ID = -1003889243376
 MY_ADMIN_ID = 8799145351
@@ -156,7 +156,6 @@ async def claim_lead_action(callback: types.CallbackQuery):
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text=f"🔒 Заброньовано агентом: {agent_name}", callback_data="claimed"))
 
-    # Безопасное обновление текста с обработкой возможных ошибок (например, если разметка не изменилась)
     try:
         await callback.message.edit_text(
             text=callback.message.text + f"\n\n✅ **Взято в роботу агентом:** {agent_name}",
@@ -211,7 +210,6 @@ async def agent_click_report(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("⚠️ Це чужа персональна кнопка звіту!", show_alert=True)
         return
 
-    # Сохраняем ID агента в FSM-данные для использования в следующем шаге
     await state.update_data(target_agent_id=agent_id)
     await callback.message.answer("Будь ласка, напишіть короткий текст вашого звіту за сьогодні (скільки дзвінків, покази, результати):")
     await state.set_state(FormStates.waiting_for_agent_report)
@@ -247,13 +245,12 @@ async def admin_view_reports(callback: types.CallbackQuery):
         else:
             report_text += f"👤 Агент `ID {agent_id}`:\n❌ **Пропуск / Звіт не здано**\n\n"
 
-    await callback.message.answer(report_text, parse_print_mode="Markdown" if hasattr(types, "parse_print_mode") else None, parse_mode="Markdown")
+    await callback.message.answer(report_text, parse_mode="Markdown")
     await callback.answer()
 
 
 # --- ЗАПУСК БОТА И СЕРВЕРА ---
 async def main():
-    # Удаляем вебхуки на случай, если они были установлены ранее, чтобы корректно запустить polling
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(start_web_server())
     asyncio.create_task(schedule_daily_reports())
