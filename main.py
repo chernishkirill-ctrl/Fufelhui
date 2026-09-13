@@ -1,983 +1,263 @@
 import os
-import re
-import html
 import logging
 import asyncio
-import urllib.parse
-from datetime import datetime
-from threading import Thread
-
-import requests
-from bs4 import BeautifulSoup
-from flask import Flask
-
+from datetime import datetime, timedelta
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
 from telegraph import Telegraph
 
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
 
-# ============================================================
-# НАСТРОЙКИ
-# ============================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-)
-
-logger = logging.getLogger("nestima")
-
-
-# ============================================================
-# ENV
-# ============================================================
-
-TOKEN = os.environ.get("BOT_TOKEN")
-
-if not TOKEN:
-    raise RuntimeError(
-        "Не найден BOT_TOKEN. Добавь BOT_TOKEN в Environment Variables Render."
-    )
-
-PUBLIC_CHANNEL_ID = int(
-    os.environ.get("PUBLIC_CHANNEL_ID", "-1003889243376")
-)
-
-AGENT_WORK_CHAT_ID = int(
-    os.environ.get("AGENT_WORK_CHAT_ID", "-1004428877093")
-)
-
-MY_ADMIN_ID = int(
-    os.environ.get("MY_ADMIN_ID", "8799145351")
-)
-
-
-# ============================================================
-# FLASK ДЛЯ RENDER (РЕШЕНИЕ ОШИБКИ ПОРТА)
-# ============================================================
-
-app = Flask(__name__)
-
-
-@app.route("/")
-def home():
-    return "Nestima Bot is running!"
-
-
-@app.route("/health")
-def health():
-    return {
-        "status": "ok",
-        "bot": "Nestima"
-    }
-
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-
-    logger.info(f"Starting web server on port {port}")
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,
-        use_reloader=False
-    )
-
-
-def keep_alive():
-    thread = Thread(
-        target=run_web,
-        daemon=True
-    )
-    thread.start()
-
-
-# ============================================================
-# TELEGRAM
-# ============================================================
+# Конфигурация подставлена автоматически
+TOKEN = "8875020404:AAHP46AKn-9ZGQc7aLuvy0te1VT1U71Lvx4"
+PUBLIC_CHANNEL_ID = "-1004428877093"
+AGENT_WORK_CHAT_ID = -1003889243376
+MY_ADMIN_ID = 8799145351
 
 bot = Bot(token=TOKEN)
-
 storage = MemoryStorage()
-
 dp = Dispatcher(storage=storage)
 
-
-# ============================================================
-# TELEGRAPH
-# ============================================================
-
+# Инициализация Telegraph
 telegraph = Telegraph()
+telegraph.create_account(short_name='RealEstateBot')
 
+# Хранилища в памяти
+ACTIVE_AGENTS = [11111111, 22222222]  # Telegram ID агентов
+reports_storage = {}  # {agent_id: {"date": "YYYY-MM-DD", "text": "...", "status": "submitted"}}
+lead_claims = {}  # {message_id: agent_id}
 
-def init_telegraph():
-    """
-    Создаём Telegraph account.
-    Если Telegraph временно недоступен — приложение
-    не падает сразу.
-    """
-
-    try:
-        result = telegraph.create_account(
-            short_name="NestimaRealEstate"
-        )
-
-        logger.info(
-            "Telegraph account created successfully"
-        )
-
-        return result
-
-    except Exception as e:
-        logger.error(
-            f"Telegraph account error: {e}"
-        )
-
-        return None
-
-
-# ============================================================
-# FSM
-# ============================================================
-
+# Состояния FSM
 class FormStates(StatesGroup):
-    waiting_for_object_data = State()
-
-
-# ============================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================================
-
-def is_admin(user_id: int) -> bool:
-    return user_id == MY_ADMIN_ID
-
-
-def extract_url(text: str):
-    """
-    Достаёт первую нормальную http/https ссылку из сообщения.
-    """
-
-    if not text:
-        return None
-
-    match = re.search(
-        r'https?://[^\s<>"\']+',
-        text
-    )
-
-    if not match:
-        return None
-
-    url = match.group(0).rstrip(".,!?;:)")
-
-    try:
-        parsed = urllib.parse.urlparse(url)
-
-        if parsed.scheme not in ("http", "https"):
-            return None
-
-        if not parsed.netloc:
-            return None
-
-        return url
-
-    except Exception:
-        return None
-
-
-def clean_text(value: str) -> str:
-    """
-    Чистим лишние пробелы, но сохраняем переносы строк.
-    """
-
-    if not value:
-        return ""
-
-    value = value.replace("\r\n", "\n")
-    value = value.replace("\r", "\n")
-
-    lines = []
-
-    for line in value.split("\n"):
-        line = re.sub(r"[ \t]+", " ", line).strip()
-
-        if line:
-            lines.append(line)
-
-    return "\n".join(lines).strip()
-
-
-def make_object_id() -> str:
-    """
-    Уникальный ID объекта.
-    """
-    return datetime.now().strftime("%d%H%M%S")
-
-
-def normalize_photo_url(src: str, base_url: str):
-    """
-    Превращает относительный URL картинки в абсолютный.
-    """
-
-    if not src:
-        return None
-
-    src = src.strip()
-
-    if src.startswith("data:"):
-        return None
-
-    return urllib.parse.urljoin(
-        base_url,
-        src
-    )
-
-
-# ============================================================
-# ПАРСИНГ
-# ============================================================
-
-def parse_listing(url: str):
-    """
-    Парсит объявление.
-    """
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8",
-        "Accept": (
-            "text/html,application/xhtml+xml,"
-            "application/xml;q=0.9,image/avif,"
-            "image/webp,*/*;q=0.8"
-        ),
-        "Connection": "keep-alive",
-    }
-
-    data = {
-        "rooms": "",
-        "area": "",
-        "floor": "",
-        "bank": "",
-        "address": "Дніпро",
-        "price": "Ціна за запитом",
-        "district_hashtag": "#Дніпро",
-        "bank_hashtag": "#Нерухомість",
-        "title": "Об'єкт нерухомості Nestima",
-        "description": (
-            "Сучасна квартира в зручному районі міста."
-        ),
-        "photos": [],
-        "phone": "Не вказано",
-    }
-
-    try:
-        logger.info(f"Parsing URL: {url}")
-
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=15,
-            allow_redirects=True
-        )
-
-        logger.info(
-            f"HTTP {response.status_code}: {response.url}"
-        )
-
-        if response.status_code != 200:
-            logger.warning(
-                f"Website returned HTTP {response.status_code}"
-            )
-            return data
-
-        response.encoding = response.apparent_encoding
-
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser"
-        )
-
-        # TITLE
-        h1 = soup.find("h1")
-
-        if h1:
-            title = clean_text(
-                h1.get_text(" ", strip=True)
-            )
-
-            if title:
-                data["title"] = title
-
-        # DESCRIPTION
-        description_selectors = [
-            ("div", {"class": "page-description"}),
-            ("div", {"class": "description"}),
-            ("div", {"class": "realty-description"}),
-            ("div", {"class": "property-description"}),
-            ("div", {"class": "offer-description"}),
-            ("meta", {"property": "og:description"}),
-        ]
-
-        description_found = False
-
-        for tag_name, attrs in description_selectors:
-            element = soup.find(tag_name, attrs)
-
-            if not element:
-                continue
-
-            if tag_name == "meta":
-                text = element.get("content", "")
-            else:
-                text = element.get_text(
-                    separator="\n",
-                    strip=True
-                )
-
-            text = clean_text(text)
-
-            if text:
-                data["description"] = text
-                description_found = True
-                break
-
-        if not description_found:
-            og_description = soup.find(
-                "meta",
-                property="og:description"
-            )
-
-            if og_description:
-                text = clean_text(
-                    og_description.get("content", "")
-                )
-
-                if text:
-                    data["description"] = text
-
-        # ADDRESS
-        address_selectors = [
-            ("span", {"class": "realty-address"}),
-            ("div", {"class": "address"}),
-            ("span", {"class": "address"}),
-            ("div", {"class": "property-address"}),
-            ("span", {"class": "property-address"}),
-        ]
-
-        for tag_name, attrs in address_selectors:
-            address_tag = soup.find(tag_name, attrs)
-
-            if not address_tag:
-                continue
-
-            addr_text = clean_text(
-                address_tag.get_text(" ", strip=True)
-            )
-
-            if addr_text:
-                data["address"] = addr_text
-                break
-
-        if data["address"] == "Дніпро":
-            meta_address = (
-                soup.find("meta", property="og:street-address")
-                or soup.find("meta", attrs={"name": "address"})
-            )
-
-            if meta_address:
-                value = clean_text(
-                    meta_address.get("content", "")
-                )
-
-                if value:
-                    data["address"] = value
-
-        # БЕРЕГ
-        lower_addr = data["address"].lower()
-
-        right_bank_words = [
-            "правобереж",
-            "центр",
-            "топол",
-            "перемог",
-            "парус",
-            "нагорівк",
-            "побед",
-            "шевченківськ",
-            "шевченковск",
-            "соборн",
-            "чечелівськ",
-            "чечеловск",
-        ]
-
-        if any(word in lower_addr for word in right_bank_words):
-            data["bank"] = "Правий Берег"
-            data["bank_hashtag"] = "#ПравийБерег"
-        else:
-            data["bank"] = "Лівий Берег"
-            data["bank_hashtag"] = "#ЛівийБерег"
-
-        # PRICE
-        price_selectors = [
-            ("span", {"class": "price"}),
-            ("div", {"class": "price"}),
-            ("span", {"class": "property-price"}),
-            ("div", {"class": "property-price"}),
-            ("span", {"class": "offer-price"}),
-        ]
-
-        for tag_name, attrs in price_selectors:
-            price_tag = soup.find(tag_name, attrs)
-
-            if not price_tag:
-                continue
-
-            price = clean_text(
-                price_tag.get_text(" ", strip=True)
-            )
-
-            if price:
-                data["price"] = price
-                break
-
-        full_text_page = clean_text(
-            soup.get_text(
-                separator="\n",
-                strip=True
-            )
-        )
-
-        # КОМНАТЫ
-        rooms_match = re.search(
-            r'(\d{1,2})\s*[-]?\s*'
-            r'(?:кімн|комн|кімнати|комнати|кімнат)',
-            full_text_page,
-            re.IGNORECASE
-        )
-
-        if not rooms_match:
-            rooms_match = re.search(
-                r'(\d{1,2})\s*кімн',
-                full_text_page,
-                re.IGNORECASE
-            )
-
-        if rooms_match:
-            rooms_num = rooms_match.group(1)
-            data["rooms"] = f"{rooms_num}к"
-            data["district_hashtag"] = f"#Дніпро{rooms_num}к"
-
-        # ПЛОЩАДЬ
-        area_match = re.search(
-            r'(\d+(?:[.,]\d+)?)\s*'
-            r'(?:м²|м2|кв\.?\s*м|кв\.м)',
-            full_text_page,
-            re.IGNORECASE
-        )
-
-        if area_match:
-            area = area_match.group(1)
-            data["area"] = f"{area}м²"
-
-        # ЭТАЖ
-        floor_match = re.search(
-            r'(\d{1,2})\s*/\s*(\d{1,2})\s*'
-            r'(?:пов|этаж|эт)',
-            full_text_page,
-            re.IGNORECASE
-        )
-
-        if floor_match:
-            data["floor"] = (
-                f"{floor_match.group(1)}/"
-                f"{floor_match.group(2)}"
-            )
-
-        if not data["floor"]:
-            floor_match = re.search(
-                r'(\d{1,2})\s+'
-                r'(?:поверх|этаж)'
-                r'.{0,10}?'
-                r'(\d{1,2})',
-                full_text_page,
-                re.IGNORECASE
-            )
-
-            if floor_match:
-                data["floor"] = (
-                    f"{floor_match.group(1)}/"
-                    f"{floor_match.group(2)}"
-                )
-
-        # PHONE
-        phone_selectors = [
-            ("span", {"class": "phone"}),
-            ("a", {"class": "phone"}),
-            ("span", {"class": "phone-number"}),
-            ("a", {"class": "phone-number"}),
-        ]
-
-        for tag_name, attrs in phone_selectors:
-            phone_tag = soup.find(tag_name, attrs)
-
-            if not phone_tag:
-                continue
-
-            phone = clean_text(
-                phone_tag.get_text(" ", strip=True)
-            )
-
-            if phone:
-                data["phone"] = phone
-                break
-
-        if data["phone"] == "Не вказано":
-            phone_match = re.search(
-                r'(\+380[\s\-\(\)\d]{9,})',
-                full_text_page
-            )
-
-            if phone_match:
-                data["phone"] = clean_text(
-                    phone_match.group(1)
-                )
-
-        # PHOTOS
-        photo_urls = []
-
-        for img in soup.find_all("img"):
-            src = (
-                img.get("src")
-                or img.get("data-src")
-                or img.get("data-original")
-                or img.get("data-lazy-src")
-            )
-
-            if not src:
-                continue
-
-            src = normalize_photo_url(src, response.url)
-
-            if not src:
-                continue
-
-            src_lower = src.lower()
-
-            valid_image = (
-                any(
-                    keyword in src_lower
-                    for keyword in [
-                        "photos", "photo", "images", "image",
-                        "realty", "property", "dom.ria", "ria",
-                        "upload", "cdn"
-                    ]
-                )
-                or re.search(r'\.(jpg|jpeg|png|webp)(\?|$)', src_lower)
-            )
-
-            if valid_image and src not in photo_urls:
-                photo_urls.append(src)
-
-        data["photos"] = photo_urls[:20]
-
-        logger.info(
-            "Parsing finished: "
-            f"title={data['title'][:50]}, "
-            f"photos={len(data['photos'])}, "
-            f"address={data['address']}"
-        )
-
-    except requests.RequestException as e:
-        logger.error(f"HTTP error while parsing {url}: {e}")
-    except Exception as e:
-        logger.exception(f"Unexpected parsing error: {e}")
-
-    return data
-
-
-# ============================================================
-# TELEGRAPH
-# ============================================================
-
-def create_telegraph_page(parsed_info, obj_id):
-    title = html.escape(parsed_info["title"])
-    address = html.escape(parsed_info["address"])
-    price = html.escape(parsed_info["price"])
-    description = html.escape(parsed_info["description"]).replace("\n", "<br>")
-
-    telegraph_html = f"<h3>{title}</h3>"
-
-    for photo in parsed_info["photos"]:
-        safe_photo = html.escape(photo, quote=True)
-        telegraph_html += f'<img src="{safe_photo}"/>'
-
-    telegraph_html += (
-        f"<p><b>Локація:</b> {address}</p>"
-        f"<p><b>Ціна:</b> {price}</p>"
-    )
-
-    if parsed_info["floor"]:
-        floor = html.escape(parsed_info["floor"])
-        telegraph_html += f"<p><b>Поверх:</b> {floor}</p>"
-
-    if parsed_info["rooms"]:
-        rooms = html.escape(parsed_info["rooms"])
-        telegraph_html += f"<p><b>Кімнати:</b> {rooms}</p>"
-
-    if parsed_info["area"]:
-        area = html.escape(parsed_info["area"])
-        telegraph_html += f"<p><b>Площа:</b> {area}</p>"
-
-    telegraph_html += (
-        "<h4>Детальний опис та характеристики:</h4>"
-        f"<p>{description}</p>"
-    )
-
-    response = telegraph.create_page(
-        title=f"Obj №{obj_id}",
-        html_content=telegraph_html
-    )
-
-    if isinstance(response, dict):
-        page_path = response.get("path")
-    else:
-        page_path = response
-
-    if not page_path:
-        raise RuntimeError("Telegraph не повернув path сторінки.")
-
-    return f"https://telegra.ph/{page_path}"
-
-
-# ============================================================
-# /START
-# ============================================================
-
+    waiting_for_object_link = State()
+    waiting_for_client_name = State()
+    waiting_for_agent_report = State()
+
+# --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
+async def handle(request):
+    return web.Response(text="I am alive!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Web server started on port {port}")
+
+
+# --- 2. ЛИЧНЫЙ ПУЛЬТ УПРАВЛЕНИЯ (ТОЛЬКО ДЛЯ ТЕБЯ) ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    if not is_admin(message.from_user.id):
-        await message.answer(
-            "Цей бот є закритим пунктом управління "
-            "агентством нерухомості Nestima."
-        )
+    if message.from_user.id != MY_ADMIN_ID:
+        await message.answer("Цей бот є закритим пунктом управління агентством нерухомості.")
         return
 
     builder = InlineKeyboardBuilder()
-    builder.row(
-        types.InlineKeyboardButton(
-            text="➕ Додати об'єкт за посиланням",
-            callback_data="add_object"
-        )
-    )
-
+    builder.row(types.InlineKeyboardButton(text="➕ Додати об'єкт за посиланням", callback_data="add_object"))
+    builder.row(types.InlineKeyboardButton(text="📊 Переглянути звіти за сьогодні", callback_data="view_reports"))
+    
     await message.answer(
-        "Вітаю, босе! Це пульт управління "
-        "агентством **Nestima**.\n\n"
-        "Обери необхідну дію:",
-        reply_markup=builder.as_markup(),
-        parse_mode="Markdown"
+        "Вітаю, босі! Це твій особистий пульт управління.\nОбери необхідну дію:",
+        reply_markup=builder.as_markup()
     )
 
 
-# ============================================================
-# ДОБАВЛЕНИЕ ОБЪЕКТА
-# ============================================================
-
+# --- 3. ПУБЛІКАЦІЯ ОБ'ЄКТА ЧЕРЕЗ TELEGRAPH ---
 @dp.callback_query(F.data == "add_object")
-async def process_add_object(
-    callback: types.CallbackQuery,
-    state: FSMContext
-):
-    if not is_admin(callback.from_user.id):
-        await callback.answer(
-            "⛔ Немає доступу.",
-            show_alert=True
-        )
+async def process_add_object(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != MY_ADMIN_ID:
+        await callback.answer("Ця дія доступна лише адміністратору.", show_alert=True)
         return
-
-    await callback.message.answer(
-        "Надішли мені **посилання на оголошення**.\n\n"
-        "Бот спарсить параметри, сформує "
-        "мінімалістичний публічний пост "
-        "та збере службову інформацію."
-    )
-
-    await state.set_state(FormStates.waiting_for_object_data)
+    await callback.message.answer("Будь ласка, надішли посилання на об'єкт нерухомості:")
+    await state.set_state(FormStates.waiting_for_object_link)
     await callback.answer()
 
-
-# ============================================================
-# ОБРАБОТКА ССЫЛКИ
-# ============================================================
-
-@dp.message(FormStates.waiting_for_object_data)
-async def handle_object_data(
-    message: types.Message,
-    state: FSMContext
-):
-    if not is_admin(message.from_user.id):
+@dp.message(FormStates.waiting_for_object_link)
+async def handle_object_link(message: types.Message, state: FSMContext):
+    if message.from_user.id != MY_ADMIN_ID:
         return
-
-    user_input = (
-        message.text
-        or message.caption
-        or ""
-    ).strip()
-
-    url = extract_url(user_input)
-
-    if not url:
-        await message.answer(
-            "❌ Надішли коректне посилання на оголошення!"
-        )
-        return
-
-    processing_message = await message.answer(
-        "⏳ Обробляю оголошення...\n\n"
-        "🔎 Отримую дані\n"
-        "📸 Збираю фотографії\n"
-        "📄 Формую Telegraph\n"
-        "📢 Готую публікацію"
-    )
+    
+    link = message.text
+    await message.answer("⏳ Обробляю посилання та створюю сторінку на Telegraph...")
 
     try:
-        parsed_info = await asyncio.to_thread(parse_listing, url)
-        obj_id = make_object_id()
-
-        telegraph_url = await asyncio.to_thread(
-            create_telegraph_page,
-            parsed_info,
-            obj_id
+        response = telegraph.create_page(
+            title="Об'єкт нерухомості",
+            html_content=f"<p>Детальний опис об'єкта нерухомості.</p><p>Джерело: <a href='{link}'>посилання</a></p>"
         )
-
-        channel_parts = []
-        if parsed_info["rooms"]:
-            channel_parts.append(f"🏠 {parsed_info['rooms']}")
-        if parsed_info["area"]:
-            channel_parts.append(f"📐 {parsed_info['area']}")
-        if parsed_info["price"]:
-            channel_parts.append(f"💵 {parsed_info['price']}")
-        if parsed_info["address"]:
-            channel_parts.append(f"📍 {parsed_info['address']}")
-
-        channel_text = (
-            "\n".join(channel_parts)
-            + "\n\n"
-            + f"📄 **Всі деталі та фото:** "
-            + telegraph_url
-            + "\n\n"
-            + parsed_info["district_hashtag"]
-            + "\n"
-            + parsed_info["bank_hashtag"]
-            + "\n"
-            + "#Nestima"
-        )
-
-        maps_query = parsed_info["address"] or "Дніпро"
-        maps_url = (
-            "https://www.google.com/maps/search/"
-            "?api=1&query="
-            + urllib.parse.quote(maps_query)
-        )
+        telegraph_url = f"https://telegra.ph/{response['path']}"
 
         builder = InlineKeyboardBuilder()
-        builder.row(
-            types.InlineKeyboardButton(
-                text="📍 На мапі",
-                url=maps_url
-            ),
-            types.InlineKeyboardButton(
-                text="📝 Записатися на перегляд",
-                callback_data=f"book_{obj_id}"
-            )
-        )
+        builder.row(types.InlineKeyboardButton(text="📄 Дивитися повний огляд об'єкта", url=telegraph_url))
+        builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data="client_request_view"))
 
         await bot.send_message(
             chat_id=PUBLIC_CHANNEL_ID,
-            text=channel_text,
+            text="🏠 **Новий об'єкт нерухомості у базі!**\n\nАктуальна пропозиція за вигідною ціною. Переходьте за посиланням нижче для ознайомлення з деталями.",
             reply_markup=builder.as_markup(),
             parse_mode="Markdown"
         )
-
-        description = parsed_info["description"]
-        if len(description) > 3000:
-            description = description[:3000] + "\n\n…"
-
-        work_chat_text = (
-            f"📥 **Новий об'єкт №{obj_id} у робочій базі!**\n\n"
-            f"📌 **Назва:** {parsed_info['title']}\n"
-            f"📍 **Адреса:** {parsed_info['address']}\n"
-            f"💵 **Ціна:** {parsed_info['price']}\n"
-            f"📐 **Площа:** {parsed_info['area'] or 'Не вказано'}\n"
-            f"🏠 **Кімнати:** {parsed_info['rooms'] or 'Не вказано'}\n"
-            f"🏢 **Поверх:** {parsed_info['floor'] or 'Не вказано'}\n"
-            f"📞 **Телефон власника / ріелтора:** `{parsed_info['phone']}`\n\n"
-            f"📄 **Telegraph:** {telegraph_url}\n\n"
-            f"📄 **Опис:**\n{description}\n\n"
-            f"🔗 **Посилання на джерело:**\n{url}"
-        )
-
-        await bot.send_message(
-            chat_id=AGENT_WORK_CHAT_ID,
-            text=work_chat_text,
-            parse_mode="Markdown"
-        )
-
-        photos = parsed_info["photos"][:10]
-        if photos:
-            media = []
-            for photo in photos:
-                try:
-                    media.append(types.InputMediaPhoto(media=photo))
-                except Exception as photo_error:
-                    logger.warning(f"Photo skipped: {photo} | {photo_error}")
-
-            if media:
-                try:
-                    await bot.send_media_group(
-                        chat_id=AGENT_WORK_CHAT_ID,
-                        media=media
-                    )
-                except Exception as media_error:
-                    logger.error(f"Media group error: {media_error}")
-
-        await processing_message.edit_text(
-            f"✅ Успішно!\n\n"
-            f"Об'єкт №{obj_id}\n"
-            f"Пост опубліковано у канал.\n"
-            f"Фото та службова інформація надіслані в робочий чат."
-        )
-
+        await message.answer(f"✅ Об'єкт успішно опубліковано у каналі!\nПосилання на Telegraph: {telegraph_url}")
     except Exception as e:
-        logger.exception("Object processing error")
-        try:
-            await processing_message.edit_text(
-                "❌ Не вдалося обробити оголошення.\n\n"
-                f"Помилка: {str(e)[:1000]}"
-            )
-        except Exception:
-            await message.answer("❌ Сталася помилка під час обробки.")
-    finally:
-        await state.clear()
+        await message.answer(f"❌ Помилка при створенні публікації: {e}")
+    
+    await state.clear()
 
 
-# ============================================================
-# КЛИЕНТ НАЖАЛ "ЗАПИСАТИСЯ"
-# ============================================================
-
-@dp.callback_query(F.data.startswith("book_"))
-async def process_channel_booking(callback: types.CallbackQuery):
-    try:
-        obj_id = callback.data.split("_", 1)[1]
-    except Exception:
-        await callback.answer("❌ Помилка заявки.", show_alert=True)
-        return
-
-    user = callback.from_user
-    client_name = user.full_name or "Не вказано"
-    client_username = f"@{user.username}" if user.username else "Не вказано"
-
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        types.InlineKeyboardButton(
-            text="🟢 Прийняти заявку",
-            callback_data=f"claim_lead_{obj_id}_{user.id}"
-        )
+# --- 4. КЛІЄНТСЬКА ЗАЯВКА З КАНАЛУ В РОБОЧИЙ ЧАТ ---
+@dp.callback_query(F.data == "client_request_view")
+async def client_request_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer(
+        "Для запису на перегляд введіть ваші дані нижче у чаті (це безпечно).", 
+        show_alert=True
     )
+    await callback.message.answer("Будь ласка, введіть ваше **Ім'я** та **Номер телефону** у форматі: `Іван, +380XXXXXXXXX`")
+    await state.set_state(FormStates.waiting_for_client_name)
 
-    await bot.send_message(
+@dp.message(FormStates.waiting_for_client_name)
+async def process_client_lead(message: types.Message, state: FSMContext):
+    lead_info = message.text
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🟢 Прийняти заявку", callback_data="claim_lead"))
+
+    sent_msg = await bot.send_message(
         chat_id=AGENT_WORK_CHAT_ID,
-        text=(
-            f"😱😱 **ЗАЯВКА НА ПЕРЕГЛЯД** **(Об'єкт №{obj_id})** 😱😱\n\n"
-            f"👤 **Клієнт:** {client_name}\n"
-            f"💬 **Telegram:** {client_username}\n"
-            f"🆔 **ID:** `{user.id}`"
-        ),
+        text=f"🔔 **Нова заявка від клієнта!**\n\nКонтактні дані: {lead_info}\nСтатус: Очікує агента.",
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
+    
+    lead_claims[sent_msg.message_id] = None
+    await message.answer("Дякуємо! Вашу заявку прийнято в обробку, наш менеджер зв'яжеться з вами найближчим часом.")
+    await state.clear()
 
-    await callback.answer(
-        "✅ Заявку надіслано! Ріелтор зв'яжеться з вами.",
-        show_alert=True
-    )
-
-
-# ============================================================
-# АГЕНТ ЗАБИРАЕТ ЗАЯВКУ
-# ============================================================
-
-@dp.callback_query(F.data.startswith("claim_lead_"))
+@dp.callback_query(F.data == "claim_lead")
 async def claim_lead_action(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
+    msg_id = callback.message.message_id
+    agent_id = callback.from_user.id
+    agent_name = callback.from_user.full_name
 
-    if len(parts) != 4:
-        await callback.answer("❌ Некоректна заявка.", show_alert=True)
+    if lead_claims.get(msg_id) is not None:
+        await callback.answer("⚠️ Цю заявку вже забронював інший агент!", show_alert=True)
         return
 
-    obj_id = parts[2]
-    client_id = parts[3]
-    agent_name = callback.from_user.full_name or "Агент"
+    lead_claims[msg_id] = agent_id
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text=f"🔒 Заброньовано агентом: {agent_name}", callback_data="claimed"))
 
-    await callback.message.edit_text(
-        text=(
-            f"😱😱 **ЗАЯВКА НА ПЕРЕГЛЯД** **(Об'єкт №{obj_id})** 😱😱\n\n"
-            f"🔒 **Заброньовано агентом:** {agent_name}\n"
-            f"🆔 **ID клієнта:** `{client_id}`"
-        ),
-        reply_markup=None,
-        parse_mode="Markdown"
-    )
-
-    await callback.answer(
-        "✅ Заявку успішно закріплено за вами.",
-        show_alert=True
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-async def main():
-    logger.info("Starting Nestima Telegram Bot...")
-
-    # Запускаем Flask-сервер в фоновом потоке, чтобы Render видел открытый порт
-    keep_alive()
-
-    # Telegraph
-    await asyncio.to_thread(init_telegraph)
-
-    # Удаляем старый webhook
-    await bot.delete_webhook(drop_pending_updates=True)
-
-    logger.info("Telegram webhook removed.")
-    logger.info("Starting polling...")
-
+    # Безопасное обновление текста с обработкой возможных ошибок (например, если разметка не изменилась)
     try:
-        await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
-        logger.info("Bot stopped.")
+        await callback.message.edit_text(
+            text=callback.message.text + f"\n\n✅ **Взято в роботу агентом:** {agent_name}",
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    await callback.answer("Ви успішно прийняли заявку!")
+
+@dp.callback_query(F.data == "claimed")
+async def already_claimed_alert(callback: types.CallbackQuery):
+    await callback.answer("⚠️ Цю заявку вже зайнято!", show_alert=True)
 
 
-# ============================================================
-# RUN
-# ============================================================
+# --- 5. СИСТЕМА КОНФИДЕНЦИАЛЬНЫХ ОТЧЕТОВ (22:00) ---
+async def schedule_daily_reports():
+    while True:
+        now = datetime.now()
+        target_time = now.replace(hour=22, minute=0, second=0, microsecond=0)
+        
+        if now >= target_time:
+            target_time += timedelta(days=1)
+            
+        sleep_seconds = (target_time - now).total_seconds()
+        await asyncio.sleep(sleep_seconds)
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        for agent_id in ACTIVE_AGENTS:
+            builder = InlineKeyboardBuilder()
+            builder.row(types.InlineKeyboardButton(
+                text="📝 Здати мій звіт за сьогодні", 
+                callback_data=f"submit_report_{agent_id}_{today_str}"
+            ))
+            
+            try:
+                await bot.send_message(
+                    chat_id=AGENT_WORK_CHAT_ID,
+                    text=f"⏰ Час вечірнього звіту для агента (ID: {agent_id}). Натисніть кнопку нижче, щоб надіслати підсумки дня (конфіденційно).",
+                    reply_markup=builder.as_markup()
+                )
+            except Exception as e:
+                logging.error(f"Не вдалося надіслати нагадування агенту {agent_id}: {e}")
+
+@dp.callback_query(F.data.startswith("submit_report_"))
+async def agent_click_report(callback: types.CallbackQuery, state: FSMContext):
+    data_parts = callback.data.split("_")
+    agent_id = int(data_parts[2])
+    
+    if callback.from_user.id != agent_id:
+        await callback.answer("⚠️ Це чужа персональна кнопка звіту!", show_alert=True)
+        return
+
+    # Сохраняем ID агента в FSM-данные для использования в следующем шаге
+    await state.update_data(target_agent_id=agent_id)
+    await callback.message.answer("Будь ласка, напишіть короткий текст вашого звіту за сьогодні (скільки дзвінків, покази, результати):")
+    await state.set_state(FormStates.waiting_for_agent_report)
+    await callback.answer()
+
+@dp.message(FormStates.waiting_for_agent_report)
+async def save_agent_report(message: types.Message, state: FSMContext):
+    agent_id = message.from_user.id
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    reports_storage[agent_id] = {
+        "date": today_str,
+        "text": message.text,
+        "status": "submitted"
+    }
+    
+    await message.answer("✅ Ваш звіт успішно збережено та надіслано керівнику.")
+    await state.clear()
+
+@dp.callback_query(F.data == "view_reports")
+async def admin_view_reports(callback: types.CallbackQuery):
+    if callback.from_user.id != MY_ADMIN_ID:
+        await callback.answer("Доступ заборонено.", show_alert=True)
+        return
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    report_text = f"📊 **Звіти за сьогодні ({today_str}):**\n\n"
+
+    for agent_id in ACTIVE_AGENTS:
+        rep = reports_storage.get(agent_id)
+        if rep and rep["date"] == today_str:
+            report_text += f"👤 Агент `ID {agent_id}`:\n💬 {rep['text']}\n\n"
+        else:
+            report_text += f"👤 Агент `ID {agent_id}`:\n❌ **Пропуск / Звіт не здано**\n\n"
+
+    await callback.message.answer(report_text, parse_print_mode="Markdown" if hasattr(types, "parse_print_mode") else None, parse_mode="Markdown")
+    await callback.answer()
+
+
+# --- ЗАПУСК БОТА И СЕРВЕРА ---
+async def main():
+    # Удаляем вебхуки на случай, если они были установлены ранее, чтобы корректно запустить polling
+    await bot.delete_webhook(drop_pending_updates=True)
+    asyncio.create_task(start_web_server())
+    asyncio.create_task(schedule_daily_reports())
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped manually.")
+    asyncio.run(main())
