@@ -16,9 +16,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import db
 
 # ==========================================
-# 1. КОНФИГУРАЦИЯ (СЕКРЕТЫ И НАСТРОЙКИ)
+# 1. КОНФИГУРАЦИЯ
 # ==========================================
-# Токен подтягивается из Environment Variables на Render
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 MY_ADMIN_ID = 8799145351
@@ -99,7 +98,7 @@ def extract_district(text: str) -> str:
     return "Дніпро"
 
 async def parse_data(source_input: str):
-    raw_text = source_input
+    raw_text = source_input or "Об'єкт без опису"
     district = extract_district(raw_text)
     
     return {
@@ -139,44 +138,66 @@ async def cmd_start(message: types.Message):
 # ==========================================
 @dp.callback_query(F.data == "add_property")
 async def start_add_property(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("🔗 <b>Надішліть посилання</b> (DOM.RIA, OLX, LUN, ЯРиелтор) або <b>перешліть пост</b> з каналу:")
+    await callback.message.answer("🔗 <b>Надішліть посилання</b> (DOM.RIA, OLX, LUN) або <b>перешліть пост</b> з описом об'єкта:")
     await state.set_state(FormStates.waiting_for_input)
     await callback.answer()
 
-@dp.message(FormStates.waiting_for_input)
+# Принимает любой тип контента (текст, фото, документы, пересланные сообщения)
+@dp.message(FormStates.waiting_for_input, F.content_type.in_({'text', 'photo', 'document'}))
 async def process_property_input(message: types.Message, state: FSMContext):
-    input_text = message.text or message.caption or "Об'єкт без тексту"
-    data = await parse_data(input_text)
-    telegraph_url = await create_telegraph_page("Огляд об'єкта", data['clean_text'])
-    
-    obj_id = data['object_id']
-    PENDING_POSTS[obj_id] = {**data, "telegraph_url": telegraph_url}
+    try:
+        # Извлекаем текст из обычного сообщения или подписи к фото/файлу
+        input_text = message.text or message.caption or ""
+        
+        if not input_text and message.forward_from_chat:
+            input_text = f"Пересланий пост з каналу {message.forward_from_chat.title}"
 
-    work_text = (
-        f"📥 <b>НОВИЙ ОБ'ЄКТ У ВНУТРІШНІЙ БАЗІ</b>\n\n"
-        f"🆔 <b>ID:</b> {data['object_id']}\n"
-        f"👤 <b>Контакт:</b> {data['phone']}\n"
-        f"📍 <b>Адреса:</b> {data['address']}\n"
-        f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-        f"📄 <b>Telegraph:</b> {telegraph_url}\n\n"
-        f"📝 <b>Оригінальний текст:</b>\n{data['raw_text'][:400]}"
-    )
-    await bot.send_message(chat_id=INTERNAL_BASE_ID, text=work_text, parse_mode="HTML")
+        if not input_text:
+            await message.answer("⚠️ Не вдалося зчитати текст. Будь ласка, надішліть посилання або опис текстом:")
+            return
 
-    preview_text = (
-        f"✅ <b>Об'єкт {obj_id} додано до Бази ріелторів!</b>\n\n"
-        f"👁 <b>Попередній перегляд для Публічного каналу:</b>\n"
-        f"📍 #{data['district']}\n"
-        f"🏢 <b>Адреса:</b> {data['address']}\n"
-        f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-        f"📝 <i>{data['clean_text'][:150]}...</i>"
-    )
-    
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📢 Опублікувати в Публічний канал", callback_data=f"publish_public_{obj_id}"))
+        data = await parse_data(input_text)
+        telegraph_url = await create_telegraph_page("Огляд об'єкта", data['clean_text'])
+        
+        obj_id = data['object_id']
+        PENDING_POSTS[obj_id] = {**data, "telegraph_url": telegraph_url}
 
-    await message.answer(preview_text, reply_markup=builder.as_markup(), parse_mode="HTML")
-    await state.clear()
+        # 1. Отправка во внутреннюю базу
+        work_text = (
+            f"📥 <b>НОВИЙ ОБ'ЄКТ У ВНУТРІШНІЙ БАЗІ</b>\n\n"
+            f"🆔 <b>ID:</b> {data['object_id']}\n"
+            f"👤 <b>Контакт:</b> {data['phone']}\n"
+            f"📍 <b>Адреса:</b> {data['address']}\n"
+            f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
+            f"📄 <b>Telegraph:</b> {telegraph_url}\n\n"
+            f"📝 <b>Оригінальний текст:</b>\n{data['raw_text'][:400]}"
+        )
+        
+        try:
+            await bot.send_message(chat_id=INTERNAL_BASE_ID, text=work_text, parse_mode="HTML")
+        except Exception as err:
+            logging.error(f"Ошибка отправки во внутреннюю базу: {err}")
+
+        # 2. Ответ админу (Предпросмотр)
+        preview_text = (
+            f"✅ <b>Об'єкт {obj_id} додано до Бази ріелторів!</b>\n\n"
+            f"👁 <b>Попередній перегляд для Публічного каналу:</b>\n"
+            f"📍 #{data['district']}\n"
+            f"🏢 <b>Адреса:</b> {data['address']}\n"
+            f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
+            f"📝 <i>{data['clean_text'][:150]}...</i>"
+        )
+        
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="📢 Опублікувати в Публічний канал", callback_data=f"publish_public_{obj_id}"))
+
+        await message.answer(preview_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await state.clear()
+
+    except Exception as e:
+        logging.error(f"Ошибка обработки объекта: {e}")
+        await message.answer(f"⚠️ Сталася помилка при обробці: {e}\nСпробуйте ще раз через /start")
+        await state.clear()
 
 @dp.callback_query(F.data.startswith("publish_public_"))
 async def publish_to_public_channel(callback: types.CallbackQuery):
@@ -198,12 +219,13 @@ async def publish_to_public_channel(callback: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="📄 Дивитися повний огляд об'єкта", url=data['telegraph_url']))
     builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=WEBAPP_FORM_URL)))
 
-    await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text=public_text, reply_markup=reply_markup_builder(builder), parse_mode="HTML")
-    await callback.message.edit_text(f"🚀 **Об'єкт {obj_id} успішно опубліковано в Публічний канал!**", parse_mode="HTML")
+    try:
+        await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text=public_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await callback.message.edit_text(f"🚀 <b>Об'єкт {obj_id} успішно опубліковано в Публічний канал!</b>", parse_mode="HTML")
+    except Exception as e:
+        await callback.message.answer(f"⚠️ Помилка публікації в канал: {e}")
+    
     await callback.answer()
-
-def reply_markup_builder(builder):
-    return builder.as_markup()
 
 # ==========================================
 # 7. ЗВІТИ (ТЕМА "ЧАТ")
@@ -273,15 +295,23 @@ async def process_deal_address(message: types.Message, state: FSMContext):
 
 @dp.message(FormStates.waiting_for_deal_price)
 async def process_deal_price(message: types.Message, state: FSMContext):
-    await state.update_data(price=float(message.text))
-    await message.answer("💵 Вкажіть комісію агентства ($):")
-    await state.set_state(FormStates.waiting_for_deal_commission)
+    try:
+        price = float(message.text.replace("$", "").replace(",", "").strip())
+        await state.update_data(price=price)
+        await message.answer("💵 Вкажіть комісію агентства ($):")
+        await state.set_state(FormStates.waiting_for_deal_commission)
+    except ValueError:
+        await message.answer("⚠️ Вкажіть суму числом (наприклад: 45000):")
 
 @dp.message(FormStates.waiting_for_deal_commission)
 async def process_deal_commission(message: types.Message, state: FSMContext):
-    await state.update_data(commission=float(message.text))
-    await message.answer("🔗 Вкажіть посилання на Telegraph-огляд:")
-    await state.set_state(FormStates.waiting_for_deal_telegraph)
+    try:
+        commission = float(message.text.replace("$", "").replace(",", "").strip())
+        await state.update_data(commission=commission)
+        await message.answer("🔗 Вкажіть посилання на Telegraph-огляд:")
+        await state.set_state(FormStates.waiting_for_deal_telegraph)
+    except ValueError:
+        await message.answer("⚠️ Вкажіть комісію числом (наприклад: 1500):")
 
 @dp.message(FormStates.waiting_for_deal_telegraph)
 async def process_deal_telegraph(message: types.Message, state: FSMContext):
@@ -301,13 +331,16 @@ async def process_deal_telegraph(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="📄 Огляд об'єкта", url=telegraph_link))
 
-    await bot.send_message(
-        chat_id=GROUP_CHAT_ID,
-        message_thread_id=DEALS_TOPIC_ID,
-        text=deal_card_text,
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML"
-    )
+    try:
+        await bot.send_message(
+            chat_id=GROUP_CHAT_ID,
+            message_thread_id=DEALS_TOPIC_ID,
+            text=deal_card_text,
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка отправки сделки: {e}")
 
     await message.answer("✅ Угоду успішно опубліковано у темі «Сделки»!")
     await state.clear()
@@ -338,10 +371,14 @@ async def process_expense_desc(message: types.Message, state: FSMContext):
 
 @dp.message(FormStates.waiting_for_expense_amount)
 async def process_expense_amount(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    db.save_expense(data['desc'], float(message.text))
-    await message.answer("✅ Витрату внесено!")
-    await state.clear()
+    try:
+        amount = float(message.text.replace("$", "").replace(",", "").strip())
+        data = await state.get_data()
+        db.save_expense(data['desc'], amount)
+        await message.answer("✅ Витрату внесено!")
+        await state.clear()
+    except ValueError:
+        await message.answer("⚠️ Введіть суму числом (наприклад: 50):")
 
 @dp.callback_query(F.data == "generate_fin_report")
 async def generate_financial_report(callback: types.CallbackQuery):
@@ -360,19 +397,17 @@ async def generate_financial_report(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# 10. ЗАПУСК ДВИЖКА (БОТ + ВЕБ-ЗАГЛУШКА)
+# 10. ЗАПУСК
 # ==========================================
 async def main():
     db.init_db()
     
-    # Авто-отчет в 22:00
     scheduler.add_job(send_daily_report_prompt, 'cron', hour=22, minute=0)
     scheduler.start()
 
-    # Фоновый запуск заглушки для Render
     await start_web_server()
 
-    logging.info("Bot successfully started with Web Dummy Server!")
+    logging.info("Bot started successfully!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
