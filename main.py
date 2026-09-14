@@ -101,7 +101,6 @@ def extract_district(text: str) -> str:
     return "Дніпро"
 
 async def fetch_page_data(url_or_text: str):
-    """Выкачивает фото и детали по ссылке (OLX/DOM.RIA) или забирает сырой текст"""
     images = []
     raw_text = url_or_text
 
@@ -157,7 +156,6 @@ async def fetch_page_data(url_or_text: str):
     }
 
 async def create_telegraph_page_with_gallery(title: str, text: str, images: list) -> str:
-    """Верстает полноценную страницу в Telegraph со встроенной галереей фотографий"""
     try:
         async with ClientSession() as session:
             acc_resp = await session.post("https://api.telegra.ph/createAccount", json={"short_name": "Nestima", "author_name": "Nestima Real Estate"})
@@ -228,7 +226,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
         obj_id = data['object_id']
         PENDING_POSTS[obj_id] = {**data, "telegraph_url": telegraph_url}
 
-        # 1. Во внутреннюю базу (Карточка + Оригинальные фото)
         work_text = (
             f"📥 <b>НОВИЙ ОБ'ЄКТ У ВНУТРІШНІЙ БАЗІ</b>\n\n"
             f"🆔 <b>ID:</b> {data['object_id']}\n"
@@ -247,7 +244,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
         except Exception as err:
             await message.answer(f"⚠️ Ошибка отправки в базу ({INTERNAL_BASE_ID}): {err}")
 
-        # 2. Предпросмотр карточки для публичного канала (Чистый текст без фото)
         preview_text = (
             f"✅ <b>Об'єкт {obj_id} оброблено!</b>\n\n"
             f"👁 <b>Так буде виглядати пост у Публічному каналі (БЕЗ фото в самом Telegram-посту):</b>\n\n"
@@ -486,12 +482,16 @@ async def generate_financial_report(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# 9. ЗАПУСК
+# 9. ЗАПУСК (С АВТО-ОЧИСТКОЙ КОНФЛИКТОВ)
 # ==========================================
 async def main():
     db.init_db()
     scheduler.start()
     await start_web_server()
+    
+    # ВОТ ЭТА СТРОЧКА УБИВАЕТ СТАРУЮ СЕССИЮ ПРИ ПЕРЕЗАПУСКЕ НА RENDER:
+    await bot.delete_webhook(drop_pending_updates=True)
+
     logging.info("Bot started successfully!")
     await dp.start_polling(bot)
 
