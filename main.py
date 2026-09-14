@@ -16,27 +16,27 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import db
 
 # ==========================================
-# 1. КОНФИГУРАЦИЯ (Укажи свои ID и токены)
+# 1. КОНФИГУРАЦИЯ (Всё заполнено и готово)
 # ==========================================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-MY_ADMIN_ID = 123456789  # Твой личный Telegram ID
+BOT_TOKEN = "8913176013:AAHKsPurAWBhrkt9O_WBD06CTfwur5WPugo"
+MY_ADMIN_ID = 8799145351
 
 # Каналы и чаты
-PUBLIC_CHANNEL_ID = "@your_public_channel"  # 1. Публичный канал для клиентов
-INTERNAL_BASE_ID = "@your_internal_base"    # 2. База для риелторов (авто-выгрузка)
+PUBLIC_CHANNEL_ID = "-1003889243376"
+INTERNAL_BASE_ID = "-5325255205"
 
-GROUP_CHAT_ID = -1001234567890             # 3. Чат сотрудников с темами
-CHAT_TOPIC_ID = 1                          # Topic ID темы "Чат" (заявки + отчёты в 22:00)
-DEALS_TOPIC_ID = 2                         # Topic ID темы "Сделки"
+GROUP_CHAT_ID = -1004428877093
+CHAT_TOPIC_ID = 3
+DEALS_TOPIC_ID = 5
 
-WEBAPP_FORM_URL = "https://your-webapp-url.com/form"
+WEBAPP_FORM_URL = "https://t.me/gggggsre"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
-# Временное хранилище обработанных объектов (готовых к публикации)
+# Временное хранилище обработанных объектов
 PENDING_POSTS = {}
 
 # ==========================================
