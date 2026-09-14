@@ -1,9 +1,9 @@
+import os
 import asyncio
 import logging
 import re
 from datetime import datetime
-import aiohttp
-from bs4 import BeautifulSoup
+from aiohttp import web
 
 from aiogram import Bot, Dispatcher, F, html, types
 from aiogram.filters import Command
@@ -16,12 +16,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import db
 
 # ==========================================
-# 1. КОНФИГУРАЦИЯ (Всё заполнено и готово)
+# 1. КОНФИГУРАЦИЯ (СЕКРЕТЫ И НАСТРОЙКИ)
 # ==========================================
-BOT_TOKEN = "8913176013:AAHKsPurAWBhrkt9O_WBD06CTfwur5WPugo"
+# Токен подтягивается из Environment Variables на Render
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 MY_ADMIN_ID = 8799145351
 
-# Каналы и чаты
 PUBLIC_CHANNEL_ID = "-1003889243376"
 INTERNAL_BASE_ID = "-5325255205"
 
@@ -32,15 +33,37 @@ DEALS_TOPIC_ID = 5
 WEBAPP_FORM_URL = "https://t.me/gggggsre"
 
 logging.basicConfig(level=logging.INFO)
+
+if not BOT_TOKEN:
+    logging.error("ОШИБКА: BOT_TOKEN не найден в переменных окружения Render!")
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
-# Временное хранилище обработанных объектов
 PENDING_POSTS = {}
 
 # ==========================================
-# 2. СОСТОЯНИЯ (FSM)
+# 2. МИНИ-ВЕБ-СЕРВЕР (ЗАГЛУШКА ДЛЯ RENDER)
+# ==========================================
+async def handle_ping(request):
+    return web.Response(text="Nestima Bot is active and running 24/7!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/ping", handle_ping)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Dummy Web-server successfully started on port {port}")
+
+# ==========================================
+# 3. СОСТОЯНИЯ (FSM)
 # ==========================================
 class FormStates(StatesGroup):
     waiting_for_input = State()
@@ -53,7 +76,7 @@ class FormStates(StatesGroup):
     waiting_for_expense_amount = State()
 
 # ==========================================
-# 3. ПАРСИНГ И ОЧИСТКА
+# 4. ПАРСИНГ И ОЧИСТКА
 # ==========================================
 def clean_sensitive_info(text: str) -> str:
     if not text:
@@ -76,7 +99,6 @@ def extract_district(text: str) -> str:
     return "Дніпро"
 
 async def parse_data(source_input: str):
-    """Парсит ссылки или пересланные посты."""
     raw_text = source_input
     district = extract_district(raw_text)
     
@@ -96,7 +118,7 @@ async def create_telegraph_page(title: str, text: str) -> str:
     return "https://telegra.ph/Oglyad-ob-ekta-Nestima-09-15"
 
 # ==========================================
-# 4. ПУЛЬТ РУКОВОДИТЕЛЯ
+# 5. ПУЛЬТ РУКОВОДИТЕЛЯ
 # ==========================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -113,7 +135,7 @@ async def cmd_start(message: types.Message):
     await message.answer("🛠 <b>Панель управління Nestima Real Estate:</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
 
 # ==========================================
-# 5. ЛОГИКА ПУБЛИКАЦИИ (БАЗА + КАНАЛ)
+# 6. ЛОГИКА ПУБЛИКАЦИИ (БАЗА + КАНАЛ)
 # ==========================================
 @dp.callback_query(F.data == "add_property")
 async def start_add_property(callback: types.CallbackQuery, state: FSMContext):
@@ -130,7 +152,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
     obj_id = data['object_id']
     PENDING_POSTS[obj_id] = {**data, "telegraph_url": telegraph_url}
 
-    # 1. АВТОМАТИЧЕСКАЯ ОТПРАВКА В БАЗУ РИЕЛТОРОВ
     work_text = (
         f"📥 <b>НОВИЙ ОБ'ЄКТ У ВНУТРІШНІЙ БАЗІ</b>\n\n"
         f"🆔 <b>ID:</b> {data['object_id']}\n"
@@ -142,7 +163,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
     )
     await bot.send_message(chat_id=INTERNAL_BASE_ID, text=work_text, parse_mode="HTML")
 
-    # 2. ПРЕДПРОСМОТР ДЛЯ ПУБЛИЧНОГО КАНАЛА В БОТЕ-ПУЛЬТЕ
     preview_text = (
         f"✅ <b>Об'єкт {obj_id} додано до Бази ріелторів!</b>\n\n"
         f"👁 <b>Попередній перегляд для Публічного каналу:</b>\n"
@@ -178,12 +198,15 @@ async def publish_to_public_channel(callback: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="📄 Дивитися повний огляд об'єкта", url=data['telegraph_url']))
     builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=WEBAPP_FORM_URL)))
 
-    await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text=public_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text=public_text, reply_markup=reply_markup_builder(builder), parse_mode="HTML")
     await callback.message.edit_text(f"🚀 **Об'єкт {obj_id} успішно опубліковано в Публічний канал!**", parse_mode="HTML")
     await callback.answer()
 
+def reply_markup_builder(builder):
+    return builder.as_markup()
+
 # ==========================================
-# 6. ОПОБЕЩЕНИЯ В ТЕМУ "ЧАТ" (ОТЧЁТЫ + ЛИДЫ)
+# 7. ЗВІТИ (ТЕМА "ЧАТ")
 # ==========================================
 async def send_daily_report_prompt():
     builder = InlineKeyboardBuilder()
@@ -228,7 +251,7 @@ async def view_reports_admin(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# 7. ФИКСАЦИЯ СДЕЛАК (В ТЕМУ "СДЕЛКИ")
+# 8. УГОДИ (ТЕМА "СДЕЛКИ")
 # ==========================================
 @dp.callback_query(F.data == "add_deal")
 async def start_add_deal(callback: types.CallbackQuery, state: FSMContext):
@@ -290,7 +313,7 @@ async def process_deal_telegraph(message: types.Message, state: FSMContext):
     await state.clear()
 
 # ==========================================
-# 8. БУХГАЛТЕРИЯ
+# 9. БУХГАЛТЕРИЯ
 # ==========================================
 @dp.callback_query(F.data == "view_accounting")
 async def view_accounting_menu(callback: types.CallbackQuery):
@@ -337,15 +360,19 @@ async def generate_financial_report(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# 9. ЗАПУСК
+# 10. ЗАПУСК ДВИЖКА (БОТ + ВЕБ-ЗАГЛУШКА)
 # ==========================================
 async def main():
     db.init_db()
-    # Авто-отчет ровно в 22:00 в тему "Чат"
+    
+    # Авто-отчет в 22:00
     scheduler.add_job(send_daily_report_prompt, 'cron', hour=22, minute=0)
     scheduler.start()
 
-    logging.info("Bot started!")
+    # Фоновый запуск заглушки для Render
+    await start_web_server()
+
+    logging.info("Bot successfully started with Web Dummy Server!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
