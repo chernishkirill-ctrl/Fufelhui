@@ -58,8 +58,28 @@ class FormStates(StatesGroup):
     waiting_for_input = State()
 
 # ==========================================
-# 4. ПАРСИНГ И ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 4. УМНЫЙ ПАРСИНГ И ФИЛЬТРАЦИЯ
 # ==========================================
+def clean_description(text: str) -> str:
+    """Удаляет системный мусор OLX/DOM.RIA, меню и рекламу."""
+    junk_patterns = [
+        r'Оголошення від.*', r'Розділ.*', r'Категорія.*', r'Бізнес.*', 
+        r'Оплата.*', r'Доставка.*', r'Похожие объявления.*', r'Смотрите также.*',
+        r'OLX.*', r'DOM.RIA.*', r'Зателефонувати.*', r'Написати.*'
+    ]
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        line_s = line.strip()
+        if len(line_s) < 3:
+            continue
+        if any(re.search(pat, line_s, re.IGNORECASE) for pat in junk_patterns):
+            continue
+        clean_lines.append(line_s)
+    
+    result = "\n".join(clean_lines)
+    return result if len(result) > 20 else text
+
 def extract_bank(text: str) -> str:
     text_l = text.lower()
     left_bank_keywords = ["лівий", "левый", "слобожанский", "калиновая", "правда", "косиора", "березинка", "парус", "левобережный"]
@@ -92,7 +112,6 @@ async def fetch_page_data(input_text: str):
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7'
             }
             async with ClientSession() as session:
@@ -101,7 +120,7 @@ async def fetch_page_data(input_text: str):
                         html_doc = await resp.text()
                         soup = BeautifulSoup(html_doc, 'html.parser')
                         
-                        # Извлекаем все изображения
+                        # Парсинг фотографий объекта
                         for img in soup.find_all('img'):
                             src = img.get('src') or img.get('data-src') or img.get('srcset')
                             if src:
@@ -110,44 +129,48 @@ async def fetch_page_data(input_text: str):
                                 if src.startswith('//'):
                                     src = 'https:' + src
                                 if 'http' in src and ('photos' in src or 'images' in src or 'olx' in src or 'ria' in src):
-                                    if src not in images and not any(ext in src for ext in ['.svg', '.gif', 'icon', 'logo', 'avatar']):
+                                    if src not in images and not any(ext in src for ext in ['.svg', '.gif', 'icon', 'logo', 'avatar', 'user']):
                                         images.append(src)
 
-                        # Извлекаем текст
+                        # Извлечение чистого текста
                         paragraphs = [p.get_text().strip() for p in soup.find_all(['p', 'div', 'h1', 'h2']) if len(p.get_text().strip()) > 25]
                         if paragraphs:
-                            raw_text = "\n\n".join(paragraphs[:20])
+                            raw_text = "\n".join(paragraphs)
 
         except Exception as e:
             logging.error(f"Parsing error: {e}")
 
-    district = extract_district(raw_text)
-    bank = extract_bank(raw_text)
+    clean_text = clean_description(raw_text)
+    district = extract_district(clean_text)
+    bank = extract_bank(clean_text)
     
-    rooms_match = re.search(r'(\d)\s*(?:к|кімн|кімнат|комн)', raw_text, re.IGNORECASE)
-    rooms = f"{rooms_match.group(1)}к" if rooms_match else "1к"
+    rooms_match = re.search(r'(\d)\s*(?:к|кімн|кімнат|комн)', clean_text, re.IGNORECASE)
+    rooms_num = rooms_match.group(1) if rooms_match else "1"
+    rooms = f"{rooms_num}к"
 
-    price_match = re.search(r'(\$\s*\d+[\d\s,]*|\d+[\d\s,]*\s*\$|\d+[\d\s,]*\s*грн|\d+[\d\s,]*\s*у\.е\.)', raw_text, re.IGNORECASE)
+    price_match = re.search(r'(\$\s*\d+[\d\s,]*|\d+[\d\s,]*\s*\$|\d+[\d\s,]*\s*грн|\d+[\d\s,]*\s*у\.е\.)', clean_text, re.IGNORECASE)
     price = price_match.group(1).strip() if price_match else "Уточнюється"
 
-    area_match = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:м²|м2|кв\.м)', raw_text, re.IGNORECASE)
+    area_match = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:м²|м2|кв\.м)', clean_text, re.IGNORECASE)
     area = f"{area_match.group(1)} м²" if area_match else "Уточнюється"
 
-    floor_match = re.search(r'(\d+)\s*/\s*(\d+)', raw_text)
+    floor_match = re.search(r'(\d+)\s*/\s*(\d+)', clean_text)
     floor = f"{floor_match.group(1)}/{floor_match.group(2)}" if floor_match else "Уточнюється"
 
-    lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
+    lines = [line.strip() for line in clean_text.split('\n') if line.strip()]
     address = lines[0][:50] if lines else "Об'єкт нерухомості"
 
     phone_match = re.search(r'\+?\d[\d\s-]{8,}\d', raw_text)
-    phone = phone_match.group(0) if phone_match else "Вказано в джерелі"
+    phone = phone_match.group(0) if phone_match else "Дивись джерело"
 
     return {
         "source_url": source_url,
+        "clean_text": clean_text,
         "raw_text": raw_text,
         "district": district,
         "bank": bank,
         "address": address,
+        "rooms_num": rooms_num,
         "rooms": rooms,
         "area": area,
         "floor": floor,
@@ -194,9 +217,9 @@ async def create_telegraph_page(title: str, text: str, images: list) -> str:
             for img_path in uploaded_images:
                 content.append({"tag": "img", "attrs": {"src": img_path}})
             
-            # 2. Небольшое описание внизу
-            short_desc = text[:500] if len(text) > 500 else text
-            for p in short_desc.split("\n"):
+            # 2. Описание оригинального объявления
+            content.append({"tag": "h4", "children": ["Опис об'єкта:"]})
+            for p in text.split("\n"):
                 p_clean = p.strip()
                 if p_clean:
                     content.append({"tag": "p", "children": [p_clean]})
@@ -261,19 +284,19 @@ async def process_property_input(message: types.Message, state: FSMContext):
     if message.from_user.id != MY_ADMIN_ID:
         return
     
-    status_msg = await message.answer("⏳ Обробка об'єкта та створення альбому в Telegraph...")
+    status_msg = await message.answer("⏳ Аналіз посилання, фільтрація тексту та генерація Telegraph...")
     
     try:
         input_text = message.text or ""
         data = await fetch_page_data(input_text)
         
         page_title = f"{data['district']} | {data['rooms']} | {data['price']}"
-        telegraph_url = await create_telegraph_page(page_title, data['raw_text'], data['images'])
+        telegraph_url = await create_telegraph_page(page_title, data['clean_text'], data['images'])
         
         obj_id = data['object_id']
 
         # ----------------------------------------------------
-        # 1. ОТПРАВКА В ЗАКРЫТУЮ БАЗУ (ПОЛНАЯ ИНФОРМАЦИЯ)
+        # 1. ОТПРАВКА В ЗАКРЫТУЮ БАЗУ (ВСЯ ИНФОРМАЦИЯ И ФОТО)
         # ----------------------------------------------------
         source_str = f"<a href='{data['source_url']}'>Перейти до джерела</a>" if data['source_url'] else "Не вказано"
         
@@ -284,7 +307,7 @@ async def process_property_input(message: types.Message, state: FSMContext):
             f"👤 <b>Контакт:</b> {html.quote(data['phone'])}\n"
             f"📍 <b>Адреса:</b> {html.quote(data['address'])}\n"
             f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-            f"📝 <b>Повний опис:</b>\n{html.quote(data['raw_text'])}"
+            f"📝 <b>Повний опис:</b>\n{html.quote(data['clean_text'][:1000])}"
         )
         
         try:
@@ -296,13 +319,17 @@ async def process_property_input(message: types.Message, state: FSMContext):
             logging.error(f"Ошибка отправки в базу: {err}")
 
         # ----------------------------------------------------
-        # 2. ОТПРАВКА В ПУБЛИЧНЫЙ КАНАЛ (БЕЗ КОНТАКТОВ И ID)
+        # 2. ПУБЛИКАЦИЯ В ПУБЛИЧНЫЙ КАНАЛ (КРАСИВАЯ ОБЛОЖКА)
         # ----------------------------------------------------
         bank_tag = "#ПравийБерег" if "Правий" in data['bank'] else "#ЛівийБерег"
         district_tag = f"#{data['district'].replace(' ', '')}"
         rooms_tag = f"#{data['rooms']}"
 
+        # Заголовок капсом
+        header_title = f"ЗДАМ {data['rooms_num']}-КІМНАТНУ КВАРТИРУ"
+
         public_text = (
+            f"🏢 **{header_title}**\n\n"
             f"#Дніпро {bank_tag} {district_tag} {rooms_tag}\n\n"
             f"📍 **Адреса:** {html.quote(data['address'])}\n"
             f"🏢 **Поверх:** {data['floor']}\n"
@@ -327,7 +354,7 @@ async def process_property_input(message: types.Message, state: FSMContext):
             disable_web_page_preview=False
         )
 
-        await status_msg.edit_text("✅ **Опубліковано!**\n• Повна картка відправлена в базу.\n• Пост та Telegraph-альбом опубліковано в канал.", parse_mode="Markdown")
+        await status_msg.edit_text("✅ **Опубліковано!**\n• Очищену картку відправлено в базу.\n• Сформовано красиву обложку та Telegraph-альбом.", parse_mode="Markdown")
         await state.clear()
 
     except Exception as e:
@@ -423,3 +450,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
