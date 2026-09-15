@@ -210,18 +210,21 @@ async def create_telegraph_page(title: str, text: str, images: list, source_url:
                 return ""
 
             uploaded_images = []
-            for img_url in images:
+            for img_url in images[:10]:
                 ph_url = await upload_image_to_telegra_ph(session, img_url, source_url)
                 if ph_url:
                     uploaded_images.append(ph_url)
 
             content = []
             
-            # 1. Сначала все фотографии альбома
+            # 1. Фотографии альбома
             for img_path in uploaded_images:
                 content.append({"tag": "img", "attrs": {"src": img_path}})
             
-            # 2. Под фотографиями полный текст объявления
+            if source_url:
+                content.append({"tag": "p", "children": [f"Посилання на джерело: {source_url}"]})
+
+            # 2. Полный текст объявления под фотками
             content.append({"tag": "h3", "children": ["Детальний опис об'єкта:"]})
             for p in text.split("\n"):
                 p_clean = p.strip()
@@ -239,7 +242,7 @@ async def create_telegraph_page(title: str, text: str, images: list, source_url:
             if page_data.get("ok"):
                 return f"https://telegra.ph/{page_data['result']['path']}"
     except Exception as e:
-        logging.error(f"Telegraph creation error: {e}")
+        logging.error(f"Telegraph creation critical error: {e}")
     return ""
 
 # ==========================================
@@ -300,9 +303,10 @@ async def process_property_input(message: types.Message, state: FSMContext):
         obj_id = data['object_id']
 
         # ----------------------------------------------------
-        # 1. ОТПРАВКА В ЗАКРЫТУЮ БАЗУ (ПОЛНАЯ ИНФОРМАЦИЯ)
+        # 1. ОТПРАВКА В ЗАКРЫТУЮ БАЗУ (ОБРЕЗКА ДО 3500 СИМВОЛОВ)
         # ----------------------------------------------------
         source_str = f"<a href='{data['source_url']}'>Перейти до джерела</a>" if data['source_url'] else "Не вказано"
+        safe_clean_text = data['clean_text'][:3500] if data['clean_text'] else "Опис відсутній"
         
         work_text = (
             f"📥 <b>НОВИЙ ОБ'ЄКТ У ВНУТРІШНІЙ БАЗІ</b>\n\n"
@@ -311,7 +315,7 @@ async def process_property_input(message: types.Message, state: FSMContext):
             f"👤 <b>Контакт:</b> {html.quote(data['phone'])}\n"
             f"📍 <b>Адреса:</b> {html.quote(data['address'])}\n"
             f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-            f"📝 <b>Повний опис:</b>\n{html.quote(data['clean_text'])}"
+            f"📝 <b>Повний опис:</b>\n{html.quote(safe_clean_text)}"
         )
         
         try:
@@ -357,7 +361,7 @@ async def process_property_input(message: types.Message, state: FSMContext):
             disable_web_page_preview=False
         )
 
-        await status_msg.edit_text("✅ **Все готово!**\n• Повна інфо у базі.\n• Пост у каналі та альбом у Telegraph успішно створено.", parse_mode="Markdown")
+        await status_msg.edit_text("✅ **Готово!** Вся інфо у базі, пост та Telegraph-альбом успішно опубліковані.", parse_mode="Markdown")
         await state.clear()
 
     except Exception as e:
