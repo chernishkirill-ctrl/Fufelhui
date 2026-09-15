@@ -32,15 +32,13 @@ DEALS_TOPIC_ID = 5
 
 logging.basicConfig(level=logging.INFO)
 
-if not BOT_TOKEN:
-    logging.error("ОШИБКА: BOT_TOKEN не найден в переменных окружения!")
-
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
-PENDING_POSTS = {}
-TAKEN_LEADS = set()
+# Хранилище заявок и объектов в памяти
+PENDING_LEADS = {}
+TAKEN_LEADS = {}
 
 # ==========================================
 # 2. МИНИ-ВЕБ-СЕРВЕР (ДЛЯ RENDER)
@@ -59,15 +57,13 @@ async def start_web_server():
     port = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.info(f"Веб-сервер запущен на порту {port}")
 
 # ==========================================
 # 3. СОСТОЯНИЯ (FSM)
 # ==========================================
 class FormStates(StatesGroup):
     waiting_for_input = State()
-    waiting_for_lead_name = State()
-    waiting_for_lead_phone = State()
+    waiting_for_lead_info = State()
     waiting_for_deal_realtor = State()
     waiting_for_deal_address = State()
     waiting_for_deal_price = State()
@@ -77,7 +73,7 @@ class FormStates(StatesGroup):
     waiting_for_expense_amount = State()
 
 # ==========================================
-# 4. УМНЫЙ ПАРСИНГ И TELEGRAPH API
+# 4. ПАРСИНГ И TELEGRAPH
 # ==========================================
 def clean_sensitive_info(text: str) -> str:
     if not text:
@@ -142,6 +138,8 @@ async def fetch_page_data(url_or_text: str):
     phone_match = re.search(r'\+?\d[\d\s-]{8,}\d', raw_text)
     phone = phone_match.group(0) if phone_match else "Контакт через агентство"
 
+    map_url = f"https://www.google.com/maps/search/?api=1&query={district}+Дніпро"
+
     return {
         "raw_text": raw_text,
         "clean_text": clean_sensitive_info(raw_text),
@@ -152,6 +150,7 @@ async def fetch_page_data(url_or_text: str):
         "price": price,
         "phone": phone,
         "images": images[:10],
+        "map_url": map_url,
         "object_id": f"ID-{datetime.now().strftime('%M%S')}"
     }
 
@@ -184,12 +183,12 @@ async def create_telegraph_page_with_gallery(title: str, text: str, images: list
             if page_data.get("ok"):
                 return f"https://telegra.ph/{page_data['result']['path']}"
     except Exception as e:
-        logging.error(f"Ошибка создания Telegraph страницы: {e}")
+        logging.error(f"Ошибка создания Telegraph: {e}")
     
     return "https://telegra.ph"
 
 # ==========================================
-# 5. ПАНЕЛЬ УПРАВЛЕНИЯ
+# 5. ПАНЕЛЬ УПРАВЛЕНИЯ И ОБРАБОТКА ССЫЛКИ
 # ==========================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -201,13 +200,9 @@ async def cmd_start(message: types.Message):
     builder.row(types.InlineKeyboardButton(text="➕ Опублікувати об'єкт / пост", callback_data="add_property"))
     builder.row(types.InlineKeyboardButton(text="🎉 Зафіксувати угоду", callback_data="add_deal"))
     builder.row(types.InlineKeyboardButton(text="📊 Бухгалтерія", callback_data="view_accounting"))
-    builder.row(types.InlineKeyboardButton(text="📋 Звіти за сьогодні", callback_data="view_daily_reports"))
 
     await message.answer("🛠 <b>Панель управління Nestima Real Estate:</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
 
-# ==========================================
-# 6. ПУБЛИКАЦИЯ
-# ==========================================
 @dp.callback_query(F.data == "add_property")
 async def start_add_property(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("🔗 Надішліть посилання (OLX / DOM.RIA) або текст об'єкта:")
@@ -224,16 +219,16 @@ async def process_property_input(message: types.Message, state: FSMContext):
         telegraph_url = await create_telegraph_page_with_gallery(page_title, data['clean_text'], data['images'])
         
         obj_id = data['object_id']
-        PENDING_POSTS[obj_id] = {**data, "telegraph_url": telegraph_url}
 
+        # 1. ОТПРАВКА В ЗАКРЫТЫЙ КАНАЛ ДЛЯ РИЕЛТОРОВ (ПОЛНАЯ ИНФО)
         work_text = (
             f"📥 <b>НОВИЙ ОБ'ЄКТ У ВНУТРІШНІЙ БАЗІ</b>\n\n"
-            f"🆔 <b>ID:</b> {data['object_id']}\n"
+            f"🆔 <b>ID:</b> {obj_id}\n"
             f"👤 <b>Контакт:</b> {html.quote(data['phone'])}\n"
-            f"📍 <b>Заголовок/Адреса:</b> {html.quote(data['address'])}\n"
+            f"📍 <b>Адреса/Заголовок:</b> {html.quote(data['address'])}\n"
             f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-            f"📄 <b>Telegraph:</b> {telegraph_url}\n\n"
-            f"📝 <b>Оригінальний текст:</b>\n{html.quote(data['raw_text'][:500])}"
+            f"📄 <b>Telegraph альбом:</b> {telegraph_url}\n\n"
+            f"📝 <b>Оригінальний опис:</b>\n{html.quote(data['raw_text'][:600])}"
         )
         
         try:
@@ -242,21 +237,31 @@ async def process_property_input(message: types.Message, state: FSMContext):
                 await bot.send_media_group(chat_id=INTERNAL_BASE_ID, media=media)
             await bot.send_message(chat_id=INTERNAL_BASE_ID, text=work_text, parse_mode="HTML")
         except Exception as err:
-            await message.answer(f"⚠️ Ошибка отправки в базу ({INTERNAL_BASE_ID}): {err}")
+            logging.error(f"Ошибка отправки в закрытую базу: {err}")
 
-        preview_text = (
-            f"✅ <b>Об'єкт {obj_id} оброблено!</b>\n\n"
-            f"👁 <b>Так буде виглядати пост у Публічному каналі (БЕЗ фото в самом Telegram-посту):</b>\n\n"
+        # 2. ОТПРАВКА В ПУБЛИЧНЫЙ КАНАЛ (МИНИМАЛЬНОЕ ОПИСАНИЕ + 2 КНОПКИ)
+        public_text = (
             f"📍 #{data['district']}\n"
             f"🏢 <b>Опис:</b> {html.quote(data['address'])}\n"
             f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-            f"📝 <i>{html.quote(data['clean_text'][:250])}...</i>"
+            f"📄 <a href='{telegraph_url}'>Переглянути фото та детальний опис у Telegraph</a>"
         )
-        
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="📢 Опублікувати в Публічний канал", callback_data=f"publish_public_{obj_id}"))
 
-        await message.answer(preview_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            types.InlineKeyboardButton(text="📍 Подивитися на карті", url=data['map_url']),
+            types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data=f"book_view_{obj_id}")
+        )
+
+        await bot.send_message(
+            chat_id=PUBLIC_CHANNEL_ID, 
+            text=public_text, 
+            reply_markup=builder.as_markup(), 
+            parse_mode="HTML",
+            disable_web_page_preview=False
+        )
+
+        await message.answer(f"✅ <b>Успішно!</b>\n1. Повний об'єкт {obj_id} відправлено в закриту базу.\n2. Публічне оголошення опубліковано в канал.", parse_mode="HTML")
         await state.clear()
 
     except Exception as e:
@@ -264,104 +269,105 @@ async def process_property_input(message: types.Message, state: FSMContext):
         await message.answer(f"⚠️ Помилка обробки: {e}")
         await state.clear()
 
-@dp.callback_query(F.data.startswith("publish_public_"))
-async def publish_to_public_channel(callback: types.CallbackQuery):
-    obj_id = callback.data.split("publish_public_")[1]
-    data = PENDING_POSTS.get(obj_id)
-
-    if not data:
-        await callback.answer("⚠️ Дані застаріли. Почніть знов через /start", show_alert=True)
-        return
-
-    public_text = (
-        f"📍 #{data['district']}\n"
-        f"🏢 <b>Опис:</b> {html.quote(data['address'])}\n"
-        f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-        f"📝 <i>{html.quote(data['clean_text'][:300])}...</i>"
-    )
-
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📄 Дивитися повний огляд та фото", url=data['telegraph_url']))
-    builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", callback_data=f"client_book_{obj_id}"))
-
-    try:
-        await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text=public_text, reply_markup=builder.as_markup(), parse_mode="HTML")
-        await callback.message.edit_text(f"🚀 <b>Об'єкт {obj_id} опубліковано в Публічний канал!</b>", parse_mode="HTML")
-    except Exception as e:
-        await callback.message.answer(f"⚠️ Помилка публікації: {e}")
-    
-    await callback.answer()
-
 # ==========================================
-# 7. ЗАПИСЬ НА ПРОСМОТР И ОБРАБОТКА ЗАЯВОК
+# 6. КЛИЕНТ ЖМЕТ «ЗАПИСАТЬСЯ НА ПРОСМОТР»
 # ==========================================
-@dp.callback_query(F.data.startswith("client_book_"))
-async def start_client_booking(callback: types.CallbackQuery, state: FSMContext):
-    obj_id = callback.data.split("client_book_")[1]
+@dp.callback_query(F.data.startswith("book_view_"))
+async def start_booking(callback: types.CallbackQuery, state: FSMContext):
+    obj_id = callback.data.split("book_view_")[1]
     await state.update_data(booking_obj_id=obj_id)
     
-    await callback.message.answer("📝 Введіть ваше <b>Ім'я</b> для запису на перегляд:", parse_mode="HTML")
-    await state.set_state(FormStates.waiting_for_lead_name)
+    await callback.message.answer(
+        "📝 **Запис на перегляд**\n\nБудь ласка, введіть ваше **Ім'я та Номер телефону** через пробіл (наприклад: *Олексій 0971234567*):",
+        parse_mode="Markdown"
+    )
+    await state.set_state(FormStates.waiting_for_lead_info)
     await callback.answer()
 
-@dp.message(FormStates.waiting_for_lead_name)
-async def process_lead_name(message: types.Message, state: FSMContext):
-    await state.update_data(lead_name=message.text)
-    await message.answer("📞 Введіть ваш <b>номер телефону</b> для зв'язку:", parse_mode="HTML")
-    await state.set_state(FormStates.waiting_for_lead_phone)
-
-@dp.message(FormStates.waiting_for_lead_phone)
-async def process_lead_phone(message: types.Message, state: FSMContext):
+@dp.message(FormStates.waiting_for_lead_info)
+async def process_lead_info(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    name = data.get("lead_name")
-    phone = message.text
-    obj_id = data.get("booking_obj_id", "Невідомо")
-
+    obj_id = data.get("booking_obj_id", "ID-0000")
+    
+    user_input = message.text or ""
+    client_username = f"@{message.from_user.username}" if message.from_user.username else "Немає username"
+    
     lead_id = f"LEAD-{datetime.now().strftime('%M%S')}"
+    
+    # Сохраняем данные клиента
+    PENDING_LEADS[lead_id] = {
+        "obj_id": obj_id,
+        "info": user_input,
+        "username": client_username,
+        "user_id": message.from_user.id
+    }
 
-    lead_text = (
-        f"📥 <b>НОВА ЗАЯВКА НА ПЕРЕГЛЯД!</b>\n\n"
+    # Сообщение в чат риелторов без показа личных данных
+    group_text = (
+        f"🔔 <b>НОВА ЗАЯВКА НА ПЕРЕГЛЯД!</b>\n\n"
         f"🆔 <b>Об'єкт:</b> {obj_id}\n"
-        f"👤 <b>Клієнт:</b> {html.quote(name)}\n"
-        f"📞 <b>Телефон:</b> {html.quote(phone)}\n"
+        f"⚡️ <i>Натисніть кнопку нижче, щоб перехопити клієнта та отримати його контакти.</i>"
     )
 
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🙋‍♂️ Взяти в роботу", callback_data=f"take_lead_{lead_id}"))
+    builder.row(types.InlineKeyboardButton(text="🙋‍♂️ Прийняти клієнта", callback_data=f"take_client_{lead_id}"))
 
     try:
         await bot.send_message(
             chat_id=GROUP_CHAT_ID,
             message_thread_id=CHAT_TOPIC_ID,
-            text=lead_text,
+            text=group_text,
             reply_markup=builder.as_markup(),
             parse_mode="HTML"
         )
-        await message.answer("✅ Дякуємо! Ваша заявка прийнята. Ріелтор зв'яжеться з вами найближчим часом.")
+        await message.answer("✅ <b>Дякуємо! Заявка прийнята.</b>\nНаш ріелтор зв'яжеться з вами найближчим часом.", parse_mode="HTML")
     except Exception as e:
-        logging.error(f"Lead error: {e}")
-        await message.answer("✅ Дякуємо! Заявку прийнято.")
+        logging.error(f"Lead routing error: {e}")
+        await message.answer("✅ Заявку прийнято!")
 
     await state.clear()
 
-@dp.callback_query(F.data.startswith("take_lead_"))
-async def take_lead_handler(callback: types.CallbackQuery):
-    lead_id = callback.data.split("take_lead_")[1]
+# ==========================================
+# 7. РИЕЛТОР ЖМЕТ «ПРИНЯТЬ КЛИЕНТА»
+# ==========================================
+@dp.callback_query(F.data.startswith("take_client_"))
+async def accept_client_handler(callback: types.CallbackQuery):
+    lead_id = callback.data.split("take_client_")[1]
 
+    # Проверка: успел ли кто-то раньше
     if lead_id in TAKEN_LEADS:
-        await callback.answer("⚠️ Цю заявку вже взяв інший ріелтор!", show_alert=True)
+        taken_by = TAKEN_LEADS[lead_id]
+        await callback.answer(f"❌ Заявку вже перехопив ріелтор {taken_by}!", show_alert=True)
         return
 
-    TAKEN_LEADS.add(lead_id)
-    realtor = callback.from_user
-    realtor_name = f"@{realtor.username}" if realtor.username else realtor.full_name
+    lead_data = PENDING_LEADS.get(lead_id)
+    if not lead_data:
+        await callback.answer("⚠️ Дані заявки застаріли.", show_alert=True)
+        return
 
-    updated_text = callback.message.text + f"\n\n✅ <b>Взято в роботу ріелтором:</b> {realtor_name}"
-    await callback.message.edit_text(updated_text, parse_mode="HTML")
-    await callback.answer("✅ Ви успішно взяли заявку в роботу!")
+    realtor = callback.from_user
+    realtor_tag = f"@{realtor.username}" if realtor.username else realtor.full_name
+    TAKEN_LEADS[lead_id] = realtor_tag
+
+    # 1. Показываем ВСЕ ДАННЫЕ ТОЛЬКО первому успевшему риелтору во всплывающем окне
+    full_info = (
+        f"🔑 КЛІЄНТА ПЕРЕХОПЛЕНО!\n\n"
+        f"🆔 Об'єкт: {lead_data['obj_id']}\n"
+        f"👤 Данні: {lead_data['info']}\n"
+        f"💬 Telegram: {lead_data['username']}"
+    )
+    await callback.answer(full_info, show_alert=True)
+
+    # 2. Обновляем сообщение в группе для остальных
+    updated_group_text = (
+        f"✅ <b>ЗАЯВКУ ЗАКРИТО</b>\n\n"
+        f"🆔 <b>Об'єкт:</b> {lead_data['obj_id']}\n"
+        f"👤 <b>Взяв у роботу:</b> {realtor_tag}"
+    )
+    await callback.message.edit_text(updated_group_text, parse_mode="HTML")
 
 # ==========================================
-# 8. СДЕЛКИ, ЗВЕТЫ, БУХГАЛТЕРИЯ
+# 8. СДЕЛКИ И БУХГАЛТЕРИЯ
 # ==========================================
 @dp.callback_query(F.data == "add_deal")
 async def start_add_deal(callback: types.CallbackQuery, state: FSMContext):
@@ -482,14 +488,13 @@ async def generate_financial_report(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# 9. ЗАПУСК (С АВТО-ОЧИСТКОЙ КОНФЛИКТОВ)
+# 9. ЗАПУСК
 # ==========================================
 async def main():
     db.init_db()
     scheduler.start()
     await start_web_server()
     
-    # ВОТ ЭТА СТРОЧКА УБИВАЕТ СТАРУЮ СЕССИЮ ПРИ ПЕРЕЗАПУСКЕ НА RENDER:
     await bot.delete_webhook(drop_pending_updates=True)
 
     logging.info("Bot started successfully!")
