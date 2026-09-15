@@ -58,10 +58,9 @@ class FormStates(StatesGroup):
     waiting_for_input = State()
 
 # ==========================================
-# 4. УМНЫЙ ПАРСИНГ И ФИЛЬТРАЦИЯ
+# 4. ПАРСИНГ И ОБРАБОТКА ДАННЫХ
 # ==========================================
 def clean_description(text: str) -> str:
-    """Удаляет системный мусор OLX/DOM.RIA, меню и рекламу."""
     junk_patterns = [
         r'Оголошення від.*', r'Розділ.*', r'Категорія.*', r'Бізнес.*', 
         r'Оплата.*', r'Доставка.*', r'Похожие объявления.*', r'Смотрите также.*',
@@ -111,16 +110,17 @@ async def fetch_page_data(input_text: str):
         source_url = url_match.group(0)
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': source_url
             }
             async with ClientSession() as session:
-                async with session.get(source_url, headers=headers, timeout=12) as resp:
+                async with session.get(source_url, headers=headers, timeout=15) as resp:
                     if resp.status == 200:
                         html_doc = await resp.text()
                         soup = BeautifulSoup(html_doc, 'html.parser')
                         
-                        # Парсинг фотографий объекта
+                        # Собираем все картинки
                         for img in soup.find_all('img'):
                             src = img.get('src') or img.get('data-src') or img.get('srcset')
                             if src:
@@ -132,8 +132,8 @@ async def fetch_page_data(input_text: str):
                                     if src not in images and not any(ext in src for ext in ['.svg', '.gif', 'icon', 'logo', 'avatar', 'user']):
                                         images.append(src)
 
-                        # Извлечение чистого текста
-                        paragraphs = [p.get_text().strip() for p in soup.find_all(['p', 'div', 'h1', 'h2']) if len(p.get_text().strip()) > 25]
+                        # Собираем текст
+                        paragraphs = [p.get_text().strip() for p in soup.find_all(['p', 'div', 'h1', 'h2']) if len(p.get_text().strip()) > 20]
                         if paragraphs:
                             raw_text = "\n".join(paragraphs)
 
@@ -161,7 +161,7 @@ async def fetch_page_data(input_text: str):
     address = lines[0][:50] if lines else "Об'єкт нерухомості"
 
     phone_match = re.search(r'\+?\d[\d\s-]{8,}\d', raw_text)
-    phone = phone_match.group(0) if phone_match else "Дивись джерело"
+    phone = phone_match.group(0) if phone_match else "Вказано в джерелі"
 
     return {
         "source_url": source_url,
@@ -180,9 +180,13 @@ async def fetch_page_data(input_text: str):
         "object_id": f"ID{datetime.now().strftime('%M%S')}"
     }
 
-async def upload_image_to_telegra_ph(session: ClientSession, image_url: str) -> str:
+async def upload_image_to_telegra_ph(session: ClientSession, image_url: str, referer: str) -> str:
     try:
-        async with session.get(image_url, timeout=8) as resp:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': referer
+        }
+        async with session.get(image_url, headers=headers, timeout=10) as resp:
             if resp.status == 200:
                 img_data = await resp.read()
                 form = FormData()
@@ -192,10 +196,10 @@ async def upload_image_to_telegra_ph(session: ClientSession, image_url: str) -> 
                     if isinstance(res, list) and len(res) > 0 and 'src' in res[0]:
                         return f"https://telegra.ph{res[0]['src']}"
     except Exception as e:
-        logging.error(f"Image upload to telegra.ph failed: {e}")
+        logging.error(f"Image upload to telegra.ph failed for {image_url}: {e}")
     return ""
 
-async def create_telegraph_page(title: str, text: str, images: list) -> str:
+async def create_telegraph_page(title: str, text: str, images: list, source_url: str) -> str:
     try:
         async with ClientSession() as session:
             acc_resp = await session.post("https://api.telegra.ph/createAccount", json={"short_name": "Nestima", "author_name": "Nestima Real Estate"})
@@ -207,18 +211,18 @@ async def create_telegraph_page(title: str, text: str, images: list) -> str:
 
             uploaded_images = []
             for img_url in images:
-                ph_url = await upload_image_to_telegra_ph(session, img_url)
+                ph_url = await upload_image_to_telegra_ph(session, img_url, source_url)
                 if ph_url:
                     uploaded_images.append(ph_url)
 
             content = []
             
-            # 1. Фотографии списком (Альбом)
+            # 1. Сначала все фотографии альбома
             for img_path in uploaded_images:
                 content.append({"tag": "img", "attrs": {"src": img_path}})
             
-            # 2. Описание оригинального объявления
-            content.append({"tag": "h4", "children": ["Опис об'єкта:"]})
+            # 2. Под фотографиями полный текст объявления
+            content.append({"tag": "h3", "children": ["Детальний опис об'єкта:"]})
             for p in text.split("\n"):
                 p_clean = p.strip()
                 if p_clean:
@@ -284,19 +288,19 @@ async def process_property_input(message: types.Message, state: FSMContext):
     if message.from_user.id != MY_ADMIN_ID:
         return
     
-    status_msg = await message.answer("⏳ Аналіз посилання, фільтрація тексту та генерація Telegraph...")
+    status_msg = await message.answer("⏳ Обробка фото, формування Telegraph-альбому та публікація...")
     
     try:
         input_text = message.text or ""
         data = await fetch_page_data(input_text)
         
         page_title = f"{data['district']} | {data['rooms']} | {data['price']}"
-        telegraph_url = await create_telegraph_page(page_title, data['clean_text'], data['images'])
+        telegraph_url = await create_telegraph_page(page_title, data['clean_text'], data['images'], data['source_url'])
         
         obj_id = data['object_id']
 
         # ----------------------------------------------------
-        # 1. ОТПРАВКА В ЗАКРЫТУЮ БАЗУ (ВСЯ ИНФОРМАЦИЯ И ФОТО)
+        # 1. ОТПРАВКА В ЗАКРЫТУЮ БАЗУ (ПОЛНАЯ ИНФОРМАЦИЯ)
         # ----------------------------------------------------
         source_str = f"<a href='{data['source_url']}'>Перейти до джерела</a>" if data['source_url'] else "Не вказано"
         
@@ -307,7 +311,7 @@ async def process_property_input(message: types.Message, state: FSMContext):
             f"👤 <b>Контакт:</b> {html.quote(data['phone'])}\n"
             f"📍 <b>Адреса:</b> {html.quote(data['address'])}\n"
             f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-            f"📝 <b>Повний опис:</b>\n{html.quote(data['clean_text'][:1000])}"
+            f"📝 <b>Повний опис:</b>\n{html.quote(data['clean_text'])}"
         )
         
         try:
@@ -319,13 +323,12 @@ async def process_property_input(message: types.Message, state: FSMContext):
             logging.error(f"Ошибка отправки в базу: {err}")
 
         # ----------------------------------------------------
-        # 2. ПУБЛИКАЦИЯ В ПУБЛИЧНЫЙ КАНАЛ (КРАСИВАЯ ОБЛОЖКА)
+        # 2. ПУБЛИКАЦИЯ В ПУБЛИЧНЫЙ КАНАЛ
         # ----------------------------------------------------
         bank_tag = "#ПравийБерег" if "Правий" in data['bank'] else "#ЛівийБерег"
         district_tag = f"#{data['district'].replace(' ', '')}"
         rooms_tag = f"#{data['rooms']}"
 
-        # Заголовок капсом
         header_title = f"ЗДАМ {data['rooms_num']}-КІМНАТНУ КВАРТИРУ"
 
         public_text = (
@@ -354,7 +357,7 @@ async def process_property_input(message: types.Message, state: FSMContext):
             disable_web_page_preview=False
         )
 
-        await status_msg.edit_text("✅ **Опубліковано!**\n• Очищену картку відправлено в базу.\n• Сформовано красиву обложку та Telegraph-альбом.", parse_mode="Markdown")
+        await status_msg.edit_text("✅ **Все готово!**\n• Повна інфо у базі.\n• Пост у каналі та альбом у Telegraph успішно створено.", parse_mode="Markdown")
         await state.clear()
 
     except Exception as e:
@@ -363,7 +366,7 @@ async def process_property_input(message: types.Message, state: FSMContext):
         await state.clear()
 
 # ==========================================
-# 7. ОБРАБОТКА ЗАЯВОК (ПЕРЕХВАТ В ГРУППУ)
+# 7. ОБРАБОТКА ЗАЯВОК
 # ==========================================
 @dp.callback_query(F.data.startswith("book_view_"))
 async def process_inline_booking(callback: types.CallbackQuery):
@@ -450,4 +453,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
