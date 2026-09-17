@@ -171,7 +171,7 @@ async def upload_to_telegraph(image_url: str) -> str:
                         if isinstance(res, list) and 'src' in res[0]:
                             return f"https://telegra.ph{res[0]['src']}"
     except Exception as e:
-        logging.error(f5"Telegraph image upload error: {e}")
+        logging.error(f"Telegraph image upload error: {e}")
     return ""
 
 async def create_telegraph_page(title: str, text: str, images: list) -> str:
@@ -184,13 +184,11 @@ async def create_telegraph_page(title: str, text: str, images: list) -> str:
                 return ""
 
             content = []
-            # Загружаем картинки на телеграф для альбома
             for img_url in images[:6]:
                 ph_url = await upload_to_telegraph(img_url)
                 if ph_url:
                     content.append({"tag": "img", "attrs": {"src": ph_url}})
 
-            # Добавляем короткое описание под фото
             content.append({"tag": "p", "children": [text[:600]]})
 
             page_resp = await session.post("https://api.telegra.ph/createPage", json={
@@ -239,7 +237,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
     obj_id = data['object_id']
     PENDING_POSTS[obj_id] = {**data, "telegraph_url": telegraph_url}
 
-    # 1. Отправка полной информации в закрытую базу
     source_str = f"<a href='{data['source_url']}'>Посилання на джерело</a>" if data['source_url'] else "Не вказано"
     work_text = (
         f"📥 <b>НОВИЙ ОБ'ЄКТ ОРЕНДИ У БАЗІ</b>\n\n"
@@ -256,7 +253,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
     except Exception as e:
         logging.error(f"Error sending to base: {e}")
 
-    # 2. Кнопка предпросмотра админу для публикации в публичный канал
     preview_text = (
         f"✅ <b>Об'єкт {obj_id} оброблено!</b>\n\n"
         f"📍 #{data['district']} | 💰 {data['price']}\n"
@@ -278,7 +274,6 @@ async def publish_to_public(callback: types.CallbackQuery):
         await callback.answer("⚠️ Дані застаріли або бот перезапускався. Створіть об'єкт заново.", show_alert=True)
         return
 
-    # В публичный канал идет только безопасная инфо без телефонов и ID
     public_text = (
         f"📍 #{data['district']} | ОРЕНДА\n"
         f"🏢 <b>Адреса:</b> {html.quote(data['address'])}\n"
@@ -298,7 +293,6 @@ async def publish_to_public(callback: types.CallbackQuery):
     
     await callback.answer()
 
-# Бухгалтерия и сделки (базовые заглушки для целостности)
 @dp.callback_query(F.data == "add_deal")
 async def start_add_deal(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("👤 Вкажіть @username ріелтора:")
