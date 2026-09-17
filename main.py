@@ -18,7 +18,7 @@ import db
 # 1. КОНФИГУРАЦИЯ
 # ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MY_ADMIN_ID = 8799145351
+MY_ADMIN_ID = 8700604325
 
 PUBLIC_CHANNEL_ID = "-1003889243376"
 INTERNAL_BASE_ID = "-1004357065341"
