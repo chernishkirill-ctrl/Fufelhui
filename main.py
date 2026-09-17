@@ -72,7 +72,7 @@ class FormStates(StatesGroup):
     waiting_for_expense_amount = State()
 
 # ==========================================
-# 4. ОБРАБОТКА И TELEGRAPH (БЕЗ СЫРЫХ ПОЛЕЙ)
+# 4. ОБРАБОТКА И TELEGRAPH
 # ==========================================
 def clean_sensitive_info(text: str) -> str:
     if not text:
@@ -143,7 +143,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
     input_text = message.text or message.caption or "Об'єкт без тексту"
     clean_text = clean_sensitive_info(input_text)
     
-    # Витягуємо телефон із вихідного тексту
     phone_match = re.search(r'\+?\d[\d\s-]{8,}\d', input_text)
     phone = phone_match.group(0) if phone_match else "Не вказано"
 
@@ -158,7 +157,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
         "object_id": obj_id
     }
 
-    # 1. ВНУТРЕННЯЯ БАЗА (повна інформація без обрізання)
     internal_text = (
         f"📥 <b>НОВИЙ ОБ'ЄКТ У БАЗІ</b> (ID: {obj_id})\n\n"
         f"👤 <b>Контакт власника:</b> {html.quote(phone)}\n"
@@ -178,7 +176,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
         logging.error(f"Помилка відправки у внутрішню базу ({INTERNAL_BASE_ID}): {e}")
         await message.answer(f"⚠️ Помилка відправки у базу ріелторів! Перевір правильність `INTERNAL_BASE_ID` у коді.")
 
-    # 2. ПРЕДПРОСМОТР В БОТЕ
     preview_text = (
         f"✅ <b>Об'єкт {obj_id} успішно оброблено!</b>\n\n"
         f"Уся інформація збережена та передана у базу. Натисніть кнопку нижче для публікації в канал:"
@@ -199,7 +196,6 @@ async def publish_to_public_channel(callback: types.CallbackQuery):
         await callback.answer("⚠️ Дані застаріли через перезапуск бота. Створіть запит заново через /start", show_alert=True)
         return
 
-    # Публічний пост містить охайний текст без спам-контактів, але з повним описом та кнопкою огляду
     public_text = (
         f"🏢 <b>Новий об'єкт нерухомості у Дніпрі</b>\n\n"
         f"{html.quote(data['clean_text'][:800])}...\n\n"
@@ -265,13 +261,21 @@ async def process_deal_address(message: types.Message, state: FSMContext):
 
 @dp.message(FormStates.waiting_for_deal_price)
 async def process_deal_price(message: types.Message, state: FSMContext):
-    await state.update_data(price=float(message.text.replace("$", "").strip()))
+    try:
+        val = float(re.sub(r'[^\d.]', '', message.text))
+    except ValueError:
+        val = 0.0
+    await state.update_data(price=val)
     await message.answer("💵 Вкажіть комісію агентства ($):")
     await state.set_state(FormStates.waiting_for_deal_commission)
 
 @dp.message(FormStates.waiting_for_deal_commission)
 async def process_deal_commission(message: types.Message, state: FSMContext):
-    await state.update_data(commission=float(message.text.replace("$", "").strip()))
+    try:
+        val = float(re.sub(r'[^\d.]', '', message.text))
+    except ValueError:
+        val = 0.0
+    await state.update_data(commission=val)
     await message.answer("🔗 Вкажіть посилання на Telegraph-огляд:")
     await state.set_state(FormStates.waiting_for_deal_telegraph)
 
@@ -331,7 +335,11 @@ async def process_expense_desc(message: types.Message, state: FSMContext):
 @dp.message(FormStates.waiting_for_expense_amount)
 async def process_expense_amount(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    db.save_expense(data['desc'], float(message.text.replace("$", "").strip()))
+    try:
+        val = float(re.sub(r'[^\d.]', '', message.text))
+    except ValueError:
+        val = 0.0
+    db.save_expense(data['desc'], val)
     await message.answer("✅ Витрату внесено!")
     await state.clear()
 
@@ -352,11 +360,14 @@ async def generate_financial_report(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# 9. ЗАПУСК БОТА И ВЕБ-СЕРВЕРА
+# 9. ЗАПУСК БОТА И ВЕБ-СЕРВЕРА (С ЗАЩИТОЙ ОТ КОНФЛИКТОВ)
 # ==========================================
 async def main():
     db.init_db()
     await start_web_server()
+
+    # ЖЕСТКАЯ ОЧИСТКА: Сбрасываем зависшие старые сессии Telegram перед запуском
+    await bot.delete_webhook(drop_pending_updates=True)
 
     logging.info("Bot started successfully!")
     await dp.start_polling(bot)
