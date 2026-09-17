@@ -72,7 +72,7 @@ class FormStates(StatesGroup):
     waiting_for_expense_amount = State()
 
 # ==========================================
-# 4. ПАРСИНГ И TELEGRAPH
+# 4. ОБРАБОТКА И TELEGRAPH (БЕЗ СЫРЫХ ПОЛЕЙ)
 # ==========================================
 def clean_sensitive_info(text: str) -> str:
     if not text:
@@ -81,76 +81,6 @@ def clean_sensitive_info(text: str) -> str:
     text = re.sub(r'http[s]?://\S+', '', text)
     text = re.sub(r'@[A-Za-z0-9_]+', '', text)
     return text.strip()
-
-def extract_fields(text: str):
-    rooms = "1к"
-    room_match = re.search(r'(\d)\s*[-ккiмн]', text.lower())
-    if room_match:
-        rooms = f"{room_match.group(1)}к"
-
-    area = "Уточнюється"
-    area_match = re.search(r'(\d+[\.,]?\d*)\s*(?:м²|кв\.?\s*м)', text.lower())
-    if area_match:
-        area = f"{area_match.group(1)} м²"
-
-    floor = "Уточнюється"
-    floor_match = re.search(r'(?:поверх:?\s*)?(\d{1,2}\s*/\s*\d{1,2})', text.lower())
-    if floor_match:
-        floor = floor_match.group(1)
-    else:
-        floor_single = re.search(r'(\d{1,2})\s*поверх', text.lower())
-        if floor_single:
-            floor = f"{floor_single.group(1)} поверх"
-
-    bank = "Правий Берег"
-    if "лівий" in text.lower():
-        bank = "Лівий Берег"
-
-    district = "Центр"
-    districts_map = {
-        "перемога": "Перемога", "центр": "Центр", "поля": "Поля", 
-        "кірова": "Поля", "гагаріна": "Гагаріна", "набережна": "Набережна", 
-        "парус": "Парус", "тополя": "Тополя", "космічна": "Космічна"
-    }
-    for key, val in districts_map.items():
-        if key in text.lower():
-            district = val
-            break
-
-    address = "вул. Центральна, 1"
-    addr_match = re.search(r'(?:вул\.?|вулиця|просп\.?|проспект|пл\.?)\s+([А-Яа-яІіЇїЄє0-9\-\.\,\s"]+)', text)
-    if addr_match:
-        address = addr_match.group(0).split(',')[0]
-
-    price = "Ціна за запитом"
-    price_match = re.search(r'(\d[\d\s]*)\s*(?:грн|usd|\$|дол)', text.lower())
-    if price_match:
-        price = price_match.group(0).upper()
-
-    return {
-        "rooms": rooms,
-        "area": area,
-        "floor": floor,
-        "bank": bank,
-        "district": district,
-        "address": address,
-        "price": price,
-        "object_id": f"ID-{datetime.now().strftime('%M%S')}"
-    }
-
-async def parse_data(source_input: str):
-    fields = extract_fields(source_input)
-    clean_text = clean_sensitive_info(source_input)
-    
-    phone_match = re.search(r'\+?\d[\d\s-]{8,}\d', source_input)
-    phone = phone_match.group(0) if phone_match else "Не вказано"
-
-    return {
-        "raw_text": source_input,
-        "clean_text": clean_text,
-        "phone": phone,
-        **fields
-    }
 
 async def create_telegraph_page(title: str, text: str) -> str:
     try:
@@ -204,31 +134,37 @@ async def cmd_start(message: types.Message):
 # ==========================================
 @dp.callback_query(F.data == "add_property")
 async def start_add_property(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("🔗 <b>Надішліть текст або посилання на оголошення:</b>", parse_mode="HTML")
+    await callback.message.answer("🔗 <b>Надішліть повний текст оголошення (з усіма деталями, ціною та контактами):</b>", parse_mode="HTML")
     await state.set_state(FormStates.waiting_for_input)
     await callback.answer()
 
 @dp.message(FormStates.waiting_for_input)
 async def process_property_input(message: types.Message, state: FSMContext):
     input_text = message.text or message.caption or "Об'єкт без тексту"
-    data = await parse_data(input_text)
-    telegraph_url = await create_telegraph_page(f"{data['district']} | {data['rooms']} | {data['price']}", data['clean_text'])
+    clean_text = clean_sensitive_info(input_text)
     
-    obj_id = data['object_id']
-    PENDING_POSTS[obj_id] = {**data, "telegraph_url": telegraph_url}
+    # Витягуємо телефон із вихідного тексту
+    phone_match = re.search(r'\+?\d[\d\s-]{8,}\d', input_text)
+    phone = phone_match.group(0) if phone_match else "Не вказано"
 
-    # 1. ОТПРАВКА ВО ВНУТРЕННЮЮ БАЗУ (полная инфо-карточка без кнопок)
+    obj_id = f"ID-{datetime.now().strftime('%M%S')}"
+    telegraph_url = await create_telegraph_page(f"Об'єкт нерухомості ({obj_id})", clean_text)
+    
+    PENDING_POSTS[obj_id] = {
+        "raw_text": input_text,
+        "clean_text": clean_text,
+        "phone": phone,
+        "telegraph_url": telegraph_url,
+        "object_id": obj_id
+    }
+
+    # 1. ВНУТРЕННЯЯ БАЗА (повна інформація без обрізання)
     internal_text = (
         f"📥 <b>НОВИЙ ОБ'ЄКТ У БАЗІ</b> (ID: {obj_id})\n\n"
-        f"<b>{data['rooms']}</b>\n"
-        f"📐 {data['area']}\n"
-        f"🔺 Поверх: {data['floor']} ⚠️\n"
-        f"📍 {html.quote(data['address'])}\n"
-        f"💰 {data['price']}\n\n"
-        f"👤 <b>Контакт:</b> {html.quote(data['phone'])}\n"
-        f"📄 <b>Telegraph:</b> <a href='{telegraph_url}'>Посилання на огляд</a>\n\n"
-        f"📝 <b>Оригінал:</b>\n{html.quote(data['clean_text'][:1500])}\n\n"
-        f"#{data['district']}{data['rooms']} #{data['bank'].replace(' ', '')} #Nestima"
+        f"👤 <b>Контакт власника:</b> {html.quote(phone)}\n"
+        f"📄 <b>Telegraph:</b> <a href='{telegraph_url}'>Посилання на повний огляд</a>\n\n"
+        f"📝 <b>Повний текст оголошення:</b>\n{html.quote(input_text)}\n\n"
+        f"#Nestima #База"
     )
 
     try:
@@ -242,15 +178,10 @@ async def process_property_input(message: types.Message, state: FSMContext):
         logging.error(f"Помилка відправки у внутрішню базу ({INTERNAL_BASE_ID}): {e}")
         await message.answer(f"⚠️ Помилка відправки у базу ріелторів! Перевір правильність `INTERNAL_BASE_ID` у коді.")
 
-    # 2. ПРЕДПРОСМОТР В БОТЕ ДЛЯ ПУБЛИЧНОГО КАНАЛА
+    # 2. ПРЕДПРОСМОТР В БОТЕ
     preview_text = (
-        f"✅ <b>Об'єкт {obj_id} оброблено!</b>\n\n"
-        f"👁 <b>Попередній перегляд для Публічного каналу:</b>\n\n"
-        f"<b>{data['rooms']}</b>\n"
-        f"📐 {data['area']}\n"
-        f"🔺 Поверх: {data['floor']} ⚠️\n"
-        f"📍 {html.quote(data['address'])}\n"
-        f"💰 {data['price']}"
+        f"✅ <b>Об'єкт {obj_id} успішно оброблено!</b>\n\n"
+        f"Уся інформація збережена та передана у базу. Натисніть кнопку нижче для публікації в канал:"
     )
     
     builder = InlineKeyboardBuilder()
@@ -265,19 +196,15 @@ async def publish_to_public_channel(callback: types.CallbackQuery):
     data = PENDING_POSTS.get(obj_id)
 
     if not data:
-        await callback.answer("⚠️ Дані застаріли. Створіть запит заново через /start", show_alert=True)
+        await callback.answer("⚠️ Дані застаріли через перезапуск бота. Створіть запит заново через /start", show_alert=True)
         return
 
+    # Публічний пост містить охайний текст без спам-контактів, але з повним описом та кнопкою огляду
     public_text = (
-        f"<b>{data['rooms']}</b>\n"
-        f"📐 {data['area']}\n"
-        f"🔺 Поверх: {data['floor']} ⚠️\n"
-        f"📍 {html.quote(data['address'])}\n"
-        f"💰 {data['price']}\n\n"
-        f"📄 Деталі та фото: <a href='{data['telegraph_url']}'>Дивитися огляд</a>\n\n"
-        f"#{data['district']}{data['rooms']}\n"
-        f"#{data['bank'].replace(' ', '')}\n"
-        f"#Nestima"
+        f"🏢 <b>Новий об'єкт нерухомості у Дніпрі</b>\n\n"
+        f"{html.quote(data['clean_text'][:800])}...\n\n"
+        f"📄 <b>Повні фото та деталі:</b> <a href='{data['telegraph_url']}'>Дивитися огляд</a>\n\n"
+        f"#Оренда #Дніпро #Nestima"
     )
 
     builder = InlineKeyboardBuilder()
@@ -415,7 +342,7 @@ async def generate_financial_report(callback: types.CallbackQuery):
 
     report = (
         f"📊 <b>ЗВЕДЕНИЙ ФІНАНСОВИЙ ЗВІТ</b>\n\n"
-        f"📥 <b>Дохід (комісії):</b> ${income:,.2f}\n"
+        f"📥 <b>Дохід (комісія):</b> ${income:,.2f}\n"
         f"📤 <b>Витрати:</b> ${expenses:,.2f}\n"
         f"-----------------------------------\n"
         f"💰 <b>ЧИСТИЙ ПРИБУТОК:</b> ${net_profit:,.2f}"
