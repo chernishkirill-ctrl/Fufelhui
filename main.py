@@ -3,7 +3,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime
-from aiohttp import web, ClientSession
+from aiohttp import web, ClientSession, FormData
 from bs4 import BeautifulSoup
 
 from aiogram import Bot, Dispatcher, F, html, types
@@ -22,14 +22,12 @@ import db
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
 MY_ADMIN_ID = 8700604325
 
-# Каналы и чаты (твои актуальные ID)
 PUBLIC_CHANNEL_ID = "-1004464251419"
 INTERNAL_BASE_ID = "-1004357065341"
 
 GROUP_CHAT_ID = -1004357065341
 CHAT_TOPIC_ID = 3
 DEALS_TOPIC_ID = 5
-ARCHIVE_TOPIC_ID = -5584583701
 
 WEBAPP_FORM_URL = "https://t.me/gggggsre"
 
@@ -69,12 +67,9 @@ class FormStates(StatesGroup):
     waiting_for_deal_price = State()
     waiting_for_deal_commission = State()
     waiting_for_deal_telegraph = State()
-    waiting_for_expense_desc = State()
-    waiting_for_expense_amount = State()
-    waiting_for_rent_date = State()
 
 # ==========================================
-# ПАРСЕР ПО ССЫЛКЕ ИЛИ ТЕКСТУ
+# ПАРСЕР И TELEGRAPH
 # ==========================================
 def clean_sensitive_info(text: str) -> str:
     if not text:
@@ -97,24 +92,38 @@ def extract_district(text: str) -> str:
             return val
     return "Дніпро"
 
-async def parse_data(source_input: str):
-    raw_text = source_input
+async def fetch_page_data(input_text: str):
+    raw_text = input_text
+    images = []
+    source_url = ""
 
-    if source_input.startswith("http"):
+    url_match = re.search(r'https?://[^\s]+', input_text)
+    if url_match:
+        source_url = url_match.group(0)
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 'Accept-Language': 'uk-UA,uk;q=0.9,en;q=0.8',
             }
             async with ClientSession() as session:
-                async with session.get(source_input, headers=headers, timeout=15) as resp:
+                async with session.get(source_url, headers=headers, timeout=12) as resp:
                     if resp.status == 200:
                         html_doc = await resp.text()
                         soup = BeautifulSoup(html_doc, 'html.parser')
                         
-                        paragraphs = [p.get_text(strip=True) for p in soup.find_all(['p', 'div', 'span', 'h1']) if len(p.get_text(strip=True)) > 15]
+                        # Собираем картинки со страницы
+                        for img in soup.find_all('img'):
+                            src = img.get('src') or img.get('data-src')
+                            if src:
+                                if src.startswith('//'):
+                                    src = 'https:' + src
+                                if 'http' in src and not any(x in src for x in ['logo', 'icon', 'avatar', '.svg']):
+                                    if src not in images:
+                                        images.append(src)
+
+                        paragraphs = [p.get_text(strip=True) for p in soup.find_all(['p', 'div', 'span']) if len(p.get_text(strip=True)) > 20]
                         if paragraphs:
-                            raw_text = "\n".join(paragraphs[:35])
+                            raw_text = "\n".join(paragraphs[:30])
         except Exception as e:
             logging.error(f"HTTP fetch error: {e}")
 
@@ -136,77 +145,128 @@ async def parse_data(source_input: str):
     phone = phone_match.group(0) if phone_match else "Не вказано"
 
     return {
+        "source_url": source_url,
         "raw_text": raw_text,
-        "clean_text": clean_sensitive_info(raw_text[:600]),
+        "clean_text": clean_sensitive_info(raw_text[:800]),
         "district": district,
         "address": address,
         "rooms": rooms,
         "area": area,
         "price": price,
         "phone": phone,
+        "images": images[:8],
         "object_id": f"ID-{datetime.now().strftime('%M%S')}"
     }
 
-async def create_telegraph_page(title: str, text: str) -> str:
-    return "https://telegra.ph/Oglyad-orendi-Nestima-09-15"
+async def upload_to_telegraph(image_url: str) -> str:
+    try:
+        async with ClientSession() as session:
+            async with session.get(image_url, timeout=6) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    form = FormData()
+                    form.add_field('file', data, filename='img.jpg', content_type='image/jpeg')
+                    async with session.post('https://telegra.ph/upload', data=form) as up_resp:
+                        res = await up_resp.json()
+                        if isinstance(res, list) and 'src' in res[0]:
+                            return f"https://telegra.ph{res[0]['src']}"
+    except Exception as e:
+        logging.error(f5"Telegraph image upload error: {e}")
+    return ""
+
+async def create_telegraph_page(title: str, text: str, images: list) -> str:
+    try:
+        async with ClientSession() as session:
+            acc_resp = await session.post("https://api.telegra.ph/createAccount", json={"short_name": "Nestima", "author_name": "Nestima Real Estate"})
+            acc_data = await acc_resp.json()
+            token = acc_data.get("result", {}).get("access_token")
+            if not token:
+                return ""
+
+            content = []
+            # Загружаем картинки на телеграф для альбома
+            for img_url in images[:6]:
+                ph_url = await upload_to_telegraph(img_url)
+                if ph_url:
+                    content.append({"tag": "img", "attrs": {"src": ph_url}})
+
+            # Добавляем короткое описание под фото
+            content.append({"tag": "p", "children": [text[:600]]})
+
+            page_resp = await session.post("https://api.telegra.ph/createPage", json={
+                "access_token": token,
+                "title": title[:256],
+                "author_name": "Nestima Real Estate",
+                "content": content,
+                "return_content": False
+            })
+            page_data = await page_resp.json()
+            if page_data.get("ok"):
+                return f"https://telegra.ph/{page_data['result']['path']}"
+    except Exception as e:
+        logging.error(f"Telegraph page creation error: {e}")
+    return ""
 
 # ==========================================
 # ХЕНДЛЕРЫ БОТА
 # ==========================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    user_id = message.from_user.id
-    
-    if user_id == MY_ADMIN_ID:
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="➕ Опублікувати об'єкт (Аренда)", callback_data="add_property"))
-        builder.row(types.InlineKeyboardButton(text="🎉 Зафіксувати угоду", callback_data="add_deal"))
-        builder.row(types.InlineKeyboardButton(text="📊 Бухгалтерія", callback_data="view_accounting"))
-        builder.row(types.InlineKeyboardButton(text="📋 Звіти за сьогодні", callback_data="view_daily_reports"))
-        await message.answer("🛠 <b>Панель керівника (Nestima Rent):</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
+    if message.from_user.id != MY_ADMIN_ID:
         return
-
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="➕ Опублікувати об'єкт в оренду", callback_data="add_property"))
-    await message.answer("👋 Вітаю, ріелторе! Твій міні-пульт управління орендою:", reply_markup=builder.as_markup(), parse_mode="HTML")
+    builder.row(types.InlineKeyboardButton(text="➕ Опублікувати об'єкт (Аренда)", callback_data="add_property"))
+    builder.row(types.InlineKeyboardButton(text="🎉 Зафіксувати угоду", callback_data="add_deal"))
+    builder.row(types.InlineKeyboardButton(text="📊 Бухгалтерія", callback_data="view_accounting"))
+    await message.answer("🛠 <b>Панель керівника (Nestima Rent):</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "add_property")
 async def start_add_property(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("🔗 <b>Надішліть посилання</b> або текст оголошення по оренді (Дніпро):")
+    await callback.message.answer("🔗 <b>Надішліть посилання</b> або текст оголошення по оренді:")
     await state.set_state(FormStates.waiting_for_input)
     await callback.answer()
 
 @dp.message(FormStates.waiting_for_input)
 async def process_property_input(message: types.Message, state: FSMContext):
-    input_text = message.text or message.caption or "Об'єкт оренди"
-    data = await parse_data(input_text)
-    telegraph_url = await create_telegraph_page("Огляд оренди", data['clean_text'])
+    status_msg = await message.answer("⏳ Збираємо дані та формуємо сторінку Telegraph...")
+    
+    input_text = message.text or message.caption or ""
+    data = await fetch_page_data(input_text)
+    
+    page_title = f"{data['district']} | {data['rooms']} | {data['price']}"
+    telegraph_url = await create_telegraph_page(page_title, data['clean_text'], data['images'])
     
     obj_id = data['object_id']
     PENDING_POSTS[obj_id] = {**data, "telegraph_url": telegraph_url}
 
+    # 1. Отправка полной информации в закрытую базу
+    source_str = f"<a href='{data['source_url']}'>Посилання на джерело</a>" if data['source_url'] else "Не вказано"
     work_text = (
         f"📥 <b>НОВИЙ ОБ'ЄКТ ОРЕНДИ У БАЗІ</b>\n\n"
-        f"🆔 <b>ID:</b> {data['object_id']}\n"
-        f"👤 <b>Контакт власника:</b> {data['phone']}\n"
-        f"📍 <b>Адреса:</b> {data['address']}\n"
+        f"🆔 <b>ID:</b> {obj_id}\n"
+        f"🔗 <b>Джерело:</b> {source_str}\n"
+        f"👤 <b>Контакт власника:</b> {html.quote(data['phone'])}\n"
+        f"📍 <b>Адреса:</b> {html.quote(data['address'])}\n"
         f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-        f"📄 <b>Telegraph:</b> {telegraph_url}\n\n"
-        f"📝 <b>Повний текст оголошення:</b>\n{data['clean_text'][:400]}"
+        f"📄 <b>Telegraph альбом:</b> {telegraph_url}\n\n"
+        f"📝 <b>Повний огляд:</b>\n{html.quote(data['raw_text'][:500])}"
     )
-    await bot.send_message(chat_id=INTERNAL_BASE_ID, text=work_text, parse_mode="HTML")
+    try:
+        await bot.send_message(chat_id=INTERNAL_BASE_ID, text=work_text, parse_mode="HTML", disable_web_page_preview=False)
+    except Exception as e:
+        logging.error(f"Error sending to base: {e}")
 
+    # 2. Кнопка предпросмотра админу для публикации в публичный канал
     preview_text = (
-        f"✅ <b>Об'єкт {obj_id} додано!</b>\n\n"
-        f"📍 #{data['district']} (Оренда)\n"
-        f"🏢 <b>Адреса:</b> {data['address']}\n"
-        f"💰 <b>Ціна:</b> {data['price']}\n"
+        f"✅ <b>Об'єкт {obj_id} оброблено!</b>\n\n"
+        f"📍 #{data['district']} | 💰 {data['price']}\n"
+        f"🔗 <a href='{telegraph_url}'>Перевірити Telegraph альбом</a>"
     )
     
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="📢 Опублікувати в Публічний канал", callback_data=f"pub_{obj_id}"))
 
-    await message.answer(preview_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await status_msg.edit_text(preview_text, reply_markup=builder.as_markup(), parse_mode="HTML", disable_web_page_preview=True)
     await state.clear()
 
 @dp.callback_query(F.data.startswith("pub_"))
@@ -215,97 +275,41 @@ async def publish_to_public(callback: types.CallbackQuery):
     data = PENDING_POSTS.get(obj_id)
 
     if not data:
-        await callback.answer("⚠️ Дані застаріли.", show_alert=True)
+        await callback.answer("⚠️ Дані застаріли або бот перезапускався. Створіть об'єкт заново.", show_alert=True)
         return
 
+    # В публичный канал идет только безопасная инфо без телефонов и ID
     public_text = (
-        f"📍 #{data['district']} | АРЕНДА\n"
-        f"🏢 <b>Адреса:</b> {data['address']}\n"
+        f"📍 #{data['district']} | ОРЕНДА\n"
+        f"🏢 <b>Адреса:</b> {html.quote(data['address'])}\n"
         f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
         f"📝 <i>{data['clean_text'][:200]}...</i>"
     )
 
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📄 Дивитися повний огляд", url=data['telegraph_url']))
+    builder.row(types.InlineKeyboardButton(text="📄 Дивитися фото та огляд", url=data['telegraph_url']))
     builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=WEBAPP_FORM_URL)))
 
-    await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text=public_text, reply_markup=builder.as_markup(), parse_mode="HTML")
-    await callback.message.edit_text(f"🚀 <b>Об'єкт {obj_id} успішно в публічному каналі!</b>", parse_mode="HTML")
+    try:
+        await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text=public_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await callback.message.edit_text(f"🚀 <b>Об'єкт {obj_id} успішно опубліковано в публічний канал!</b>", parse_mode="HTML")
+    except Exception as e:
+        await callback.message.answer(f"⚠️ Помилка публікації: {e}")
+    
     await callback.answer()
 
-# Сделки и бухгалтерия
+# Бухгалтерия и сделки (базовые заглушки для целостности)
 @dp.callback_query(F.data == "add_deal")
 async def start_add_deal(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("👤 Вкажіть @username ріелтора:")
     await state.set_state(FormStates.waiting_for_deal_realtor)
     await callback.answer()
 
-@dp.message(FormStates.waiting_for_deal_realtor)
-async def process_deal_realtor(message: types.Message, state: FSMContext):
-    await state.update_data(realtor=message.text)
-    await message.answer("🏠 Вкажіть адресу об'єкта оренди:")
-    await state.set_state(FormStates.waiting_for_deal_address)
-
-@dp.message(FormStates.waiting_for_deal_address)
-async def process_deal_address(message: types.Message, state: FSMContext):
-    await state.update_data(address=message.text)
-    await message.answer("💰 Вкажіть місячну вартість оренди (грн):")
-    await state.set_state(FormStates.waiting_for_deal_price)
-
-@dp.message(FormStates.waiting_for_deal_price)
-async def process_deal_price(message: types.Message, state: FSMContext):
-    await state.update_data(price=float(message.text))
-    await message.answer("💵 Вкажіть комісію агентства (грн):")
-    await state.set_state(FormStates.waiting_for_deal_commission)
-
-@dp.message(FormStates.waiting_for_deal_commission)
-async def process_deal_commission(message: types.Message, state: FSMContext):
-    await state.update_data(commission=float(message.text))
-    await message.answer("🔗 Вкажіть посилання на Telegraph-огляд:")
-    await state.set_state(FormStates.waiting_for_deal_telegraph)
-
-@dp.message(FormStates.waiting_for_deal_telegraph)
-async def process_deal_telegraph(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    telegraph_link = message.text
-
-    db.save_deal(data['realtor'], data['address'], data['price'], data['commission'], telegraph_link)
-
-    deal_card_text = (
-        f"🎉 <b>ОРЕНДУ УСПІШНО ЗАКРИТО!</b>\n\n"
-        f"👤 <b>Ріелтор:</b> {data['realtor']}\n"
-        f"🏠 <b>Об'єкт:</b> {data['address']}\n"
-        f"💰 <b>Ціна оренди:</b> {data['price']:,.0f} грн\n"
-        f"💵 <b>Комісія агентства:</b> {data['commission']:,.0f} грн"
-    )
-
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📄 Огляд об'єкта", url=telegraph_link))
-
-    await bot.send_message(
-        chat_id=GROUP_CHAT_ID,
-        message_thread_id=DEALS_TOPIC_ID,
-        text=deal_card_text,
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML"
-    )
-
-    await message.answer("✅ Угоду оренди зафіксовано!")
-    await state.clear()
-
 @dp.callback_query(F.data == "view_accounting")
 async def view_accounting_menu(callback: types.CallbackQuery):
     income, expenses = db.get_financial_summary()
     net_profit = income - expenses
-
-    report = (
-        f"📊 <b>ЗВЕДЕНИЙ ФІНАНСОВИЙ ЗВІТ (ОРЕНДА)</b>\n\n"
-        f"📥 <b>Дохід (комісії):</b> {income:,.2f} грн\n"
-        f"📤 <b>Витрати:</b> {expenses:,.2f} грн\n"
-        f"-----------------------------------\n"
-        f"💰 <b>ЧИСТИЙ ПРИБУТОК:</b> {net_profit:,.2f} грн"
-    )
-    await callback.message.answer(report, parse_mode="HTML")
+    await callback.message.answer(f"📊 <b>Фінансовий звіт:</b>\nДоходи: {income}\nВитрати: {expenses}\nПрибуток: {net_profit}", parse_mode="HTML")
     await callback.answer()
 
 # ==========================================
@@ -314,11 +318,8 @@ async def view_accounting_menu(callback: types.CallbackQuery):
 async def main():
     db.init_db()
     await start_web_server()
-    
-    scheduler.start()
     await bot.delete_webhook(drop_pending_updates=True)
-
-    logging.info("Bot and Web Server started successfully!")
+    logging.info("Bot started successfully!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
