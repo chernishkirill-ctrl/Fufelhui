@@ -1,9 +1,9 @@
+import os
 import asyncio
 import logging
 import re
 from datetime import datetime
-import aiohttp
-from bs4 import BeautifulSoup
+from aiohttp import ClientSession, web
 
 from aiogram import Bot, Dispatcher, F, html, types
 from aiogram.filters import Command
@@ -16,21 +16,26 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import db
 
 # ==========================================
-# 1. КОНФИГУРАЦИЯ
+# 1. КОНФИГУРАЦИЯ (Замени при необходимости)
 # ==========================================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-MY_ADMIN_ID = 123456789  # Твой личный Telegram ID
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-PUBLIC_CHANNEL_ID = "@your_public_channel"  
-INTERNAL_BASE_ID = "@your_internal_base"    
+MY_ADMIN_ID = 8799145351
 
-GROUP_CHAT_ID = -1001234567890             
-CHAT_TOPIC_ID = 1                          
-DEALS_TOPIC_ID = 2                         
+PUBLIC_CHANNEL_ID = "-1003889243376"
+INTERNAL_BASE_ID = "-5325255205"
 
-WEBAPP_FORM_URL = "https://your-webapp-url.com/form"
+GROUP_CHAT_ID = -1004428877093
+CHAT_TOPIC_ID = 3
+DEALS_TOPIC_ID = 5
+
+WEBAPP_FORM_URL = "https://t.me/gggggsre"
 
 logging.basicConfig(level=logging.INFO)
+
+if not BOT_TOKEN:
+    logging.error("ОШИБКА: BOT_TOKEN не найден в переменных окружения!")
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
@@ -38,7 +43,26 @@ scheduler = AsyncIOScheduler()
 PENDING_POSTS = {}
 
 # ==========================================
-# 2. СОСТОЯНИЯ (FSM)
+# 2. МИНИ-ВЕБ-СЕРВЕР (ДЛЯ RENDER 24/7)
+# ==========================================
+async def handle_ping(request):
+    return web.Response(text="Nestima Bot is active and running 24/7!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/ping", handle_ping)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Dummy Web-server successfully started on port {port}")
+
+# ==========================================
+# 3. СОСТОЯНИЯ (FSM)
 # ==========================================
 class FormStates(StatesGroup):
     waiting_for_input = State()
@@ -51,7 +75,7 @@ class FormStates(StatesGroup):
     waiting_for_expense_amount = State()
 
 # ==========================================
-# 3. ИНТЕЛЛЕКТУАЛЬНЫЙ ПАРСИНГ ПОД ЭТАЛОН
+# 4. ИНТЕЛЛЕКТУАЛЬНЫЙ ПАРСИНГ И TELEGRAPH
 # ==========================================
 def clean_sensitive_info(text: str) -> str:
     if not text:
@@ -62,20 +86,19 @@ def clean_sensitive_info(text: str) -> str:
     return text.strip()
 
 def extract_fields(text: str):
-    """Вытаскивает параметры из текста объявления."""
-    # 1. Краткое кол-во комнат (например: 3к, 1-кімнатна -> 3к)
+    # Кратко комнаты (3к, 1к)
     rooms = "1к"
     room_match = re.search(r'(\d)\s*[-ккiмн]', text.lower())
     if room_match:
         rooms = f"{room_match.group(1)}к"
 
-    # 2. Площадь (например: 65 м2, 65.0м² -> 65.0 м²)
+    # Площадь
     area = "Уточнюється"
     area_match = re.search(r'(\d+[\.,]?\d*)\s*(?:м²|кв\.?\s*м)', text.lower())
     if area_match:
         area = f"{area_match.group(1)} м²"
 
-    # 3. Этаж (например: 10/10, поверх 2 з 9)
+    # Этаж
     floor = "Уточнюється"
     floor_match = re.search(r'(?:поверх:?\s*)?(\d{1,2}\s*/\s*\d{1,2})', text.lower())
     if floor_match:
@@ -85,30 +108,30 @@ def extract_fields(text: str):
         if floor_single:
             floor = f"{floor_single.group(1)} поверх"
 
-    # 4. Берег
+    # Берег
     bank = "Правий Берег"
     if "лівий" in text.lower():
         bank = "Лівий Берег"
 
-    # 5. Район
+    # Район
     district = "Центр"
     districts_map = {
         "перемога": "Перемога", "центр": "Центр", "поля": "Поля", 
         "кірова": "Поля", "гагаріна": "Гагаріна", "набережна": "Набережна", 
-        "парус": "Парус", "тополя": "Тополя", "космічна": "Космічна", "рогальова": "Центр"
+        "парус": "Парус", "тополя": "Тополя", "космічна": "Космічна"
     }
     for key, val in districts_map.items():
         if key in text.lower():
             district = val
             break
 
-    # 6. Адрес (ищем улицу)
+    # Адрес
     address = "вул. Центральна, 1"
     addr_match = re.search(r'(?:вул\.?|вулиця|просп\.?|проспект|пл\.?)\s+([А-Яа-яІіЇїЄє0-9\-\.\,\s"]+)', text)
     if addr_match:
-        address = addr_match.group(0).split(',')[0] + ("," + addr_match.group(0).split(',')[1] if ',' in addr_match.group(0) else "")
+        address = addr_match.group(0).split(',')[0]
 
-    # 7. Цена
+    # Цена
     price = "Ціна за запитом"
     price_match = re.search(r'(\d[\d\s]*)\s*(?:грн|usd|\$|дол)', text.lower())
     if price_match:
@@ -129,7 +152,6 @@ async def parse_data(source_input: str):
     fields = extract_fields(source_input)
     clean_text = clean_sensitive_info(source_input)
     
-    # Извлекаем телефон из сырого текста для внутренней базы
     phone_match = re.search(r'\+?\d[\d\s-]{8,}\d', source_input)
     phone = phone_match.group(0) if phone_match else "Не вказано"
 
@@ -141,15 +163,43 @@ async def parse_data(source_input: str):
     }
 
 async def create_telegraph_page(title: str, text: str) -> str:
+    """Создание страницы в Telegraph через официальный API"""
+    try:
+        async with ClientSession() as session:
+            acc_response = await session.post("https://api.telegra.ph/createAccount", json={
+                "short_name": "Nestima",
+                "author_name": "Nestima Real Estate"
+            })
+            acc_data = await acc_response.json()
+            access_token = acc_data.get("result", {}).get("access_token")
+
+            if not access_token:
+                return f"https://telegra.ph/Obyekt-{datetime.now().strftime('%d-%m-%Y-%H%M')}"
+
+            content = [{"tag": "p", "children": [p]} for p in text.split("\n") if p.strip()]
+            
+            page_response = await session.post("https://api.telegra.ph/createPage", json={
+                "access_token": access_token,
+                "title": title[:256],
+                "author_name": "Nestima Real Estate",
+                "content": content,
+                "return_content": False
+            })
+            page_data = await page_response.json()
+            if page_data.get("ok"):
+                return f"https://telegra.ph/{page_data['result']['path']}"
+    except Exception as e:
+        logging.error(f"Telegraph API error: {e}")
+    
     return f"https://telegra.ph/Obyekt-{datetime.now().strftime('%d-%m-%Y-%H%M')}"
 
 # ==========================================
-# 4. ПУЛЬТ РУКОВОДИТЕЛЯ
+# 5. ПУЛЬТ РУКОВОДИТЕЛЯ
 # ==========================================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.from_user.id != MY_ADMIN_ID:
-        await message.answer("👋 Вітаю! Бот працює.")
+        await message.answer("👋 Вітаю! Бот працює в штатному режимі.")
         return
 
     builder = InlineKeyboardBuilder()
@@ -161,11 +211,11 @@ async def cmd_start(message: types.Message):
     await message.answer("🛠 <b>Панель управління Nestima Real Estate:</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
 
 # ==========================================
-# 5. ПУБЛИКАЦИЯ ОБЪЕКТА
+# 6. ПУБЛИКАЦИЯ ОБЪЕКТА (БАЗА + КАНАЛ)
 # ==========================================
 @dp.callback_query(F.data == "add_property")
 async def start_add_property(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("🔗 <b>Надішліть текст або посилання на оголошення:</b>")
+    await callback.message.answer("🔗 <b>Надішліть текст або посилання на оголошення:</b>", parse_mode="HTML")
     await state.set_state(FormStates.waiting_for_input)
     await callback.answer()
 
@@ -173,31 +223,44 @@ async def start_add_property(callback: types.CallbackQuery, state: FSMContext):
 async def process_property_input(message: types.Message, state: FSMContext):
     input_text = message.text or message.caption or "Об'єкт без тексту"
     data = await parse_data(input_text)
-    telegraph_url = await create_telegraph_page("Огляд об'єкта", data['clean_text'])
+    telegraph_url = await create_telegraph_page(f"{data['district']} | {data['rooms']} | {data['price']}", data['clean_text'])
     
     obj_id = data['object_id']
     PENDING_POSTS[obj_id] = {**data, "telegraph_url": telegraph_url}
 
-    # 1. Отправка во внутреннюю базу (с лимитом длины)
-    safe_clean_text = data['clean_text'][:3500] if data['clean_text'] else "Опис відсутній"
-    work_text = (
-        f"📥 <b>НОВИЙ ОБ'ЄКТ У ВНУТРІШНІЙ БАЗІ</b>\n\n"
-        f"🆔 <b>ID:</b> {obj_id}\n"
-        f"👤 <b>Контакт:</b> {html.quote(data['phone'])}\n"
-        f"📍 <b>Адреса:</b> {html.quote(data['address'])}\n"
-        f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-        f"📄 <b>Telegraph:</b> {telegraph_url}\n\n"
-        f"📝 <b>Оригінал:</b>\n{html.quote(safe_clean_text)}"
-    )
-    await bot.send_message(chat_id=INTERNAL_BASE_ID, text=work_text, parse_mode="HTML")
-
-    # 2. Предпросмотр для публичного канала
-    preview_text = (
-        f"✅ <b>Об'єкт {obj_id} готовий до публікації!</b>\n\n"
+    # 1. ОТПРАВКА ВО ВНУТРЕННЮЮ БАЗУ (полная инфо-карточка без кнопок)
+    internal_text = (
+        f"📥 <b>НОВИЙ ОБ'ЄКТ У БАЗІ</b> (ID: {obj_id})\n\n"
         f"<b>{data['rooms']}</b>\n"
         f"📐 {data['area']}\n"
         f"🔺 Поверх: {data['floor']} ⚠️\n"
-        f"📍 {data['address']}\n"
+        f"📍 {html.quote(data['address'])}\n"
+        f"💰 {data['price']}\n\n"
+        f"👤 <b>Контакт:</b> {html.quote(data['phone'])}\n"
+        f"📄 <b>Telegraph:</b> <a href='{telegraph_url}'>Посилання на огляд</a>\n\n"
+        f"📝 <b>Оригінал:</b>\n{html.quote(data['clean_text'][:1500])}\n\n"
+        f"#{data['district']}{data['rooms']} #{data['bank'].replace(' ', '')} #Nestima"
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=INTERNAL_BASE_ID, 
+            text=internal_text, 
+            parse_mode="HTML",
+            link_preview_options={"is_disabled": True}
+        )
+    except Exception as e:
+        logging.error(f"Помилка відправки у внутрішню базу ({INTERNAL_BASE_ID}): {e}")
+        await message.answer(f"⚠️ Помилка відправки у базу ріелторів! Перевір правильність `INTERNAL_BASE_ID` у коді.")
+
+    # 2. ПРЕДПРОСМОТР В БОТЕ ДЛЯ ПУБЛИЧНОГО КАНАЛА
+    preview_text = (
+        f"✅ <b>Об'єкт {obj_id} оброблено!</b>\n\n"
+        f"👁 <b>Попередній перегляд для Публічного каналу:</b>\n\n"
+        f"<b>{data['rooms']}</b>\n"
+        f"📐 {data['area']}\n"
+        f"🔺 Поверх: {data['floor']} ⚠️\n"
+        f"📍 {html.quote(data['address'])}\n"
         f"💰 {data['price']}"
     )
     
@@ -213,15 +276,15 @@ async def publish_to_public_channel(callback: types.CallbackQuery):
     data = PENDING_POSTS.get(obj_id)
 
     if not data:
-        await callback.answer("⚠️ Дані застаріли.", show_alert=True)
+        await callback.answer("⚠️ Дані застаріли. Створіть запит заново через /start", show_alert=True)
         return
 
-    # СТРОГИЙ ЭТАЛОННЫЙ ФОРМАТ ПОСТА
+    # ЭТАЛОННЫЙ ПОСТ ДЛЯ ПУБЛИЧНОГО КАНАЛА
     public_text = (
-        f"{data['rooms']}\n"
+        f"<b>{data['rooms']}</b>\n"
         f"📐 {data['area']}\n"
         f"🔺 Поверх: {data['floor']} ⚠️\n"
-        f"📍 {data['address']}\n"
+        f"📍 {html.quote(data['address'])}\n"
         f"💰 {data['price']}\n\n"
         f"📄 Деталі та фото: <a href='{data['telegraph_url']}'>Дивитися огляд</a>\n\n"
         f"#{data['district']}{data['rooms']}\n"
@@ -230,22 +293,26 @@ async def publish_to_public_channel(callback: types.CallbackQuery):
     )
 
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=WEBAPP_FORM_URL)))
+    builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", url=CONTACT_URL))
 
-    # Отправка в канал СТРОГО БЕЗ ПРЕВЬЮ
-    await bot.send_message(
-        chat_id=PUBLIC_CHANNEL_ID, 
-        text=public_text, 
-        reply_markup=builder.as_markup(), 
-        parse_mode="HTML",
-        link_preview_options={"is_disabled": True}
-    )
+    try:
+        # СТРОГО ОТПРАВЛЯЕМ С ОТКЛЮЧЕННЫМ ПРЕВЬЮ ССЫЛКИ
+        await bot.send_message(
+            chat_id=PUBLIC_CHANNEL_ID, 
+            text=public_text, 
+            reply_markup=builder.as_markup(), 
+            parse_mode="HTML",
+            link_preview_options={"is_disabled": True}
+        )
+        await callback.message.edit_text(f"🚀 <b>Об'єкт {obj_id} успішно опубліковано в Публічний канал!</b>", parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Помилка публікації в канал: {e}")
+        await callback.message.answer(f"⚠️ Помилка публікації: {e}")
     
-    await callback.message.edit_text(f"🚀 **Об'єкт успішно опубліковано в Публічний канал у правильному форматі!**", parse_mode="HTML")
     await callback.answer()
 
 # ==========================================
-# 6. ОПОВЕЩЕНИЯ И ОТЧЕТЫ В ГРУППУ
+# 7. ЗВІТИ ТА УГОДИ (ТЕМИ В ГРУППЕ)
 # ==========================================
 async def send_daily_report_prompt():
     builder = InlineKeyboardBuilder()
@@ -289,9 +356,6 @@ async def view_reports_admin(callback: types.CallbackQuery):
     await callback.message.answer(report_text, parse_mode="HTML")
     await callback.answer()
 
-# ==========================================
-# 7. ФИКСАЦИЯ СДЕЛОК
-# ==========================================
 @dp.callback_query(F.data == "add_deal")
 async def start_add_deal(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("👤 Вкажіть @username ріелтора:")
@@ -312,13 +376,13 @@ async def process_deal_address(message: types.Message, state: FSMContext):
 
 @dp.message(FormStates.waiting_for_deal_price)
 async def process_deal_price(message: types.Message, state: FSMContext):
-    await state.update_data(price=float(message.text))
+    await state.update_data(price=float(message.text.replace("$", "").strip()))
     await message.answer("💵 Вкажіть комісію агентства ($):")
     await state.set_state(FormStates.waiting_for_deal_commission)
 
 @dp.message(FormStates.waiting_for_deal_commission)
 async def process_deal_commission(message: types.Message, state: FSMContext):
-    await state.update_data(commission=float(message.text))
+    await state.update_data(commission=float(message.text.replace("$", "").strip()))
     await message.answer("🔗 Вкажіть посилання на Telegraph-огляд:")
     await state.set_state(FormStates.waiting_for_deal_telegraph)
 
@@ -331,8 +395,8 @@ async def process_deal_telegraph(message: types.Message, state: FSMContext):
 
     deal_card_text = (
         f"🎉 <b>УГОДУ ЗАКРИТО!</b>\n\n"
-        f"👤 <b>Ріелтор:</b> {data['realtor']}\n"
-        f"🏠 <b>Об'єкт:</b> {data['address']}\n"
+        f"👤 <b>Ріелтор:</b> {html.quote(data['realtor'])}\n"
+        f"🏠 <b>Об'єкт:</b> {html.quote(data['address'])}\n"
         f"💰 <b>Сума угоди:</b> ${data['price']:,.0f}\n"
         f"💵 <b>Комісія агентства:</b> ${data['commission']:,.0f}"
     )
@@ -378,7 +442,7 @@ async def process_expense_desc(message: types.Message, state: FSMContext):
 @dp.message(FormStates.waiting_for_expense_amount)
 async def process_expense_amount(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    db.save_expense(data['desc'], float(message.text))
+    db.save_expense(data['desc'], float(message.text.replace("$", "").strip()))
     await message.answer("✅ Витрату внесено!")
     await state.clear()
 
@@ -399,14 +463,17 @@ async def generate_financial_report(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# 9. ЗАПУСК
+# 9. ЗАПУСК БОТА И ВЕБ-СЕРВЕРА
 # ==========================================
 async def main():
     db.init_db()
+    
     scheduler.add_job(send_daily_report_prompt, 'cron', hour=22, minute=0)
     scheduler.start()
 
-    logging.info("Bot started!")
+    await start_web_server()
+
+    logging.info("Bot started successfully!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
