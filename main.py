@@ -111,7 +111,6 @@ async def fetch_page_data(input_text: str):
                         html_doc = await resp.text()
                         soup = BeautifulSoup(html_doc, 'html.parser')
                         
-                        # Собираем картинки со страницы
                         for img in soup.find_all('img'):
                             src = img.get('src') or img.get('data-src')
                             if src:
@@ -282,6 +281,7 @@ async def publish_to_public(callback: types.CallbackQuery):
     )
 
     builder = InlineKeyboardBuilder()
+    # Правильное добавление ссылочной кнопки через параметр url=
     builder.row(types.InlineKeyboardButton(text="📄 Дивитися фото та огляд", url=data['telegraph_url']))
     builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=WEBAPP_FORM_URL)))
 
