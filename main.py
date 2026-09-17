@@ -11,15 +11,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import db
 
 # ==========================================
-# 1. КОНФИГУРАЦИЯ (Замени при необходимости)
+# 1. КОНФИГУРАЦИЯ
 # ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 MY_ADMIN_ID = 8799145351
 
 PUBLIC_CHANNEL_ID = "-1003889243376"
@@ -38,7 +36,6 @@ if not BOT_TOKEN:
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-scheduler = AsyncIOScheduler()
 
 PENDING_POSTS = {}
 
@@ -75,7 +72,7 @@ class FormStates(StatesGroup):
     waiting_for_expense_amount = State()
 
 # ==========================================
-# 4. ИНТЕЛЛЕКТУАЛЬНЫЙ ПАРСИНГ И TELEGRAPH
+# 4. ПАРСИНГ И TELEGRAPH
 # ==========================================
 def clean_sensitive_info(text: str) -> str:
     if not text:
@@ -86,19 +83,16 @@ def clean_sensitive_info(text: str) -> str:
     return text.strip()
 
 def extract_fields(text: str):
-    # Кратко комнаты (3к, 1к)
     rooms = "1к"
     room_match = re.search(r'(\d)\s*[-ккiмн]', text.lower())
     if room_match:
         rooms = f"{room_match.group(1)}к"
 
-    # Площадь
     area = "Уточнюється"
     area_match = re.search(r'(\d+[\.,]?\d*)\s*(?:м²|кв\.?\s*м)', text.lower())
     if area_match:
         area = f"{area_match.group(1)} м²"
 
-    # Этаж
     floor = "Уточнюється"
     floor_match = re.search(r'(?:поверх:?\s*)?(\d{1,2}\s*/\s*\d{1,2})', text.lower())
     if floor_match:
@@ -108,12 +102,10 @@ def extract_fields(text: str):
         if floor_single:
             floor = f"{floor_single.group(1)} поверх"
 
-    # Берег
     bank = "Правий Берег"
     if "лівий" in text.lower():
         bank = "Лівий Берег"
 
-    # Район
     district = "Центр"
     districts_map = {
         "перемога": "Перемога", "центр": "Центр", "поля": "Поля", 
@@ -125,13 +117,11 @@ def extract_fields(text: str):
             district = val
             break
 
-    # Адрес
     address = "вул. Центральна, 1"
     addr_match = re.search(r'(?:вул\.?|вулиця|просп\.?|проспект|пл\.?)\s+([А-Яа-яІіЇїЄє0-9\-\.\,\s"]+)', text)
     if addr_match:
         address = addr_match.group(0).split(',')[0]
 
-    # Цена
     price = "Ціна за запитом"
     price_match = re.search(r'(\d[\d\s]*)\s*(?:грн|usd|\$|дол)', text.lower())
     if price_match:
@@ -163,7 +153,6 @@ async def parse_data(source_input: str):
     }
 
 async def create_telegraph_page(title: str, text: str) -> str:
-    """Создание страницы в Telegraph через официальный API"""
     try:
         async with ClientSession() as session:
             acc_response = await session.post("https://api.telegra.ph/createAccount", json={
@@ -279,7 +268,6 @@ async def publish_to_public_channel(callback: types.CallbackQuery):
         await callback.answer("⚠️ Дані застаріли. Створіть запит заново через /start", show_alert=True)
         return
 
-    # ЭТАЛОННЫЙ ПОСТ ДЛЯ ПУБЛИЧНОГО КАНАЛА
     public_text = (
         f"<b>{data['rooms']}</b>\n"
         f"📐 {data['area']}\n"
@@ -293,10 +281,9 @@ async def publish_to_public_channel(callback: types.CallbackQuery):
     )
 
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", url=CONTACT_URL))
+    builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", url=WEBAPP_FORM_URL))
 
     try:
-        # СТРОГО ОТПРАВЛЯЕМ С ОТКЛЮЧЕННЫМ ПРЕВЬЮ ССЫЛКИ
         await bot.send_message(
             chat_id=PUBLIC_CHANNEL_ID, 
             text=public_text, 
@@ -312,33 +299,8 @@ async def publish_to_public_channel(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==========================================
-# 7. ЗВІТИ ТА УГОДИ (ТЕМИ В ГРУППЕ)
+# 7. ЗВІТИ ТА УГОДИ
 # ==========================================
-async def send_daily_report_prompt():
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📌 Зафіксувати мій звіт", callback_data="save_group_report"))
-    
-    await bot.send_message(
-        chat_id=GROUP_CHAT_ID,
-        message_thread_id=CHAT_TOPIC_ID,
-        text="⏰ <b>Час вечірнього звіту!</b>\n\nНапишіть підсумок дня у цей чат (через Reply) та натисніть кнопку нижче.",
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML"
-    )
-
-@dp.callback_query(F.data == "save_group_report")
-async def save_group_report_handler(callback: types.CallbackQuery):
-    user = callback.from_user
-    reply_msg = callback.message.reply_to_message
-
-    if not reply_msg or reply_msg.from_user.id != user.id:
-        await callback.answer("⚠️ Натисніть цю кнопку у відповідь (Reply) на СВОЄ повідомлення зі звітом!", show_alert=True)
-        return
-
-    username_str = f"@{user.username}" if user.username else "Без username"
-    db.save_report(user.id, username_str, user.full_name, reply_msg.text)
-    await callback.answer("✅ Ваш звіт зафіксовано!", show_alert=True)
-
 @dp.callback_query(F.data == "view_daily_reports")
 async def view_reports_admin(callback: types.CallbackQuery):
     rows = db.get_today_reports()
@@ -467,10 +429,6 @@ async def generate_financial_report(callback: types.CallbackQuery):
 # ==========================================
 async def main():
     db.init_db()
-    
-    scheduler.add_job(send_daily_report_prompt, 'cron', hour=22, minute=0)
-    scheduler.start()
-
     await start_web_server()
 
     logging.info("Bot started successfully!")
