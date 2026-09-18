@@ -29,7 +29,7 @@ GROUP_CHAT_ID = -1004357065341
 CHAT_TOPIC_ID = 3
 DEALS_TOPIC_ID = 5
 
-WEBAPP_FORM_URL = "https://t.me/gggggsre"
+CONTACT_URL = "https://t.me/gggggsre"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -180,7 +180,7 @@ async def create_telegraph_page(title: str, text: str, images: list) -> str:
             acc_data = await acc_resp.json()
             token = acc_data.get("result", {}).get("access_token")
             if not token:
-                return ""
+                return "https://telegra.ph"
 
             content = []
             for img_url in images[:6]:
@@ -202,7 +202,7 @@ async def create_telegraph_page(title: str, text: str, images: list) -> str:
                 return f"https://telegra.ph/{page_data['result']['path']}"
     except Exception as e:
         logging.error(f"Telegraph page creation error: {e}")
-    return ""
+    return "https://telegra.ph"
 
 # ==========================================
 # ХЕНДЛЕРЫ БОТА
@@ -277,13 +277,13 @@ async def publish_to_public(callback: types.CallbackQuery):
         f"📍 #{data['district']} | ОРЕНДА\n"
         f"🏢 <b>Адреса:</b> {html.quote(data['address'])}\n"
         f"🚪 <b>Кімнат:</b> {data['rooms']} | 📐 <b>Площа:</b> {data['area']} | 💰 <b>Ціна:</b> {data['price']}\n\n"
-        f"📝 <i>{data['clean_text'][:200]}...</i>"
+        f"📝 <i>{html.quote(data['clean_text'][:200])}...</i>"
     )
 
     builder = InlineKeyboardBuilder()
-    # Правильное добавление ссылочной кнопки через параметр url=
+    # ИСПРАВЛЕНО: обе кнопки используют корректный параметр url=
     builder.row(types.InlineKeyboardButton(text="📄 Дивитися фото та огляд", url=data['telegraph_url']))
-    builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", web_app=types.WebAppInfo(url=WEBAPP_FORM_URL)))
+    builder.row(types.InlineKeyboardButton(text="📝 Записатися на перегляд", url=CONTACT_URL))
 
     try:
         await bot.send_message(chat_id=PUBLIC_CHANNEL_ID, text=public_text, reply_markup=builder.as_markup(), parse_mode="HTML")
