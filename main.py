@@ -69,7 +69,7 @@ class FormStates(StatesGroup):
     waiting_for_deal_telegraph = State()
 
 # ==========================================
-# УСИЛЕННЫЙ ПАРСЕР И TELEGRAPH
+# ТОЧЕЧНЫЙ ПАРСЕР DIM.RIA / OLX И TELEGRAPH
 # ==========================================
 def clean_sensitive_info(text: str) -> str:
     if not text:
@@ -101,7 +101,6 @@ async def fetch_page_data(input_text: str):
     if url_match:
         source_url = url_match.group(0)
         try:
-            # Усиленные заголовки браузера, чтобы сайты не блокировали запрос
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -121,14 +120,21 @@ async def fetch_page_data(input_text: str):
                                 if src.startswith('//'):
                                     src = 'https:' + src
                                 if 'http' in src and not any(x in src for x in ['logo', 'icon', 'avatar', '.svg', 'spinner']):
-                                    clean_src = src.split(' ')[0] # убираем артефакты srcset
+                                    clean_src = src.split(' ')[0]
                                     if clean_src not in images:
                                         images.append(clean_src)
 
-                        # Извлечение текста объявления со страниц каталогов
-                        paragraphs = [p.get_text(strip=True) for p in soup.find_all(['p', 'div', 'span', 'h1', 'h2']) if len(p.get_text(strip=True)) > 15]
-                        if paragraphs:
-                            raw_text = "\n".join(paragraphs[:40])
+                        # ТОЧЕЧНЫЙ ПОИСК ОПИСАНИЯ (исключаем меню сайтов)
+                        content_block = soup.find('div', class_=re.compile(r'(description|realty-description|text|details)', re.I))
+                        if content_block:
+                            raw_text = content_block.get_text(separator="\n", strip=True)
+                        else:
+                            # Запасной вариант: берем параграфы, исключая навигационные теги
+                            for tag in soup(['nav', 'header', 'footer', 'script', 'style']):
+                                tag.decompose()
+                            paragraphs = [p.get_text(strip=True) for p in soup.find_all(['p', 'div']) if len(p.get_text(strip=True)) > 20]
+                            if paragraphs:
+                                raw_text = "\n".join(paragraphs[:30])
         except Exception as e:
             logging.error(f"HTTP fetch error: {e}")
 
@@ -151,8 +157,8 @@ async def fetch_page_data(input_text: str):
     floor = floor_match.group(1) if floor_match else "Уточнюється"
 
     # Парсим адрес
-    lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
-    address = lines[0][:50] if lines else "вул. Центральна, 1"
+    lines = [line.strip() for line in raw_text.split('\n') if line.strip() and len(line.strip()) < 60]
+    address = lines[0] if lines else "вул. Центральна, 1"
 
     # Парсим телефон владельца
     phone_match = re.search(r'\+?380\s*\(?\d{2}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}|\+?\d[\d\s-]{8,}\d', raw_text)
@@ -161,7 +167,7 @@ async def fetch_page_data(input_text: str):
     return {
         "source_url": source_url,
         "raw_text": raw_text,
-        "clean_text": clean_sensitive_info(raw_text[:1000]),
+        "clean_text": clean_sensitive_info(raw_text[:1200]),
         "district": district,
         "address": address,
         "rooms": rooms,
@@ -199,13 +205,12 @@ async def create_telegraph_page(title: str, text: str, images: list) -> str:
                 return "https://telegra.ph"
 
             content = []
-            # Загружаем картинки на Telegraph
             for img_url in images[:6]:
                 ph_url = await upload_to_telegraph(img_url)
                 if ph_url:
                     content.append({"tag": "img", "attrs": {"src": ph_url}})
 
-            content.append({"tag": "p", "children": [text[:800]]})
+            content.append({"tag": "p", "children": [text[:1000]]})
 
             page_resp = await session.post("https://api.telegra.ph/createPage", json={
                 "access_token": token,
@@ -255,7 +260,6 @@ async def process_property_input(message: types.Message, state: FSMContext):
 
     source_str = f"<a href='{data['source_url']}'>Посилання на джерело</a>" if data['source_url'] else "Не вказано"
     
-    # Отчет во внутреннюю базу
     work_text = (
         f"📥 <b>НОВИЙ ОБ'ЄКТ У БАЗІ (ID: {obj_id})</b>\n\n"
         f"🔗 <b>Джерело:</b> {source_str}\n"
@@ -293,7 +297,6 @@ async def publish_to_public(callback: types.CallbackQuery):
         await callback.answer("⚠️ Дані застаріли. Створіть об'єкт заново.", show_alert=True)
         return
 
-    # Строгий эталонный формат по твоему скриншоту
     public_text = (
         f"{data['rooms']}\n"
         f"📐 {data['area']}\n"
