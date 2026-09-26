@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -23,14 +24,45 @@ def _bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on", "да"}
 
 
+_DB_URL_RE = re.compile(r"(postgres(?:ql)?(?:\+\w+)?|sqlite(?:\+\w+)?)://[^\s'\"`<>]+", re.IGNORECASE)
+
+
 def normalize_database_url(url: str) -> str:
-    """Render/Heroku выдают postgres://..., а SQLAlchemy async нужен postgresql+asyncpg://..."""
-    url = url.strip()
-    if url.startswith("postgres://"):
-        url = "postgresql+asyncpg://" + url[len("postgres://"):]
-    elif url.startswith("postgresql://"):
-        url = "postgresql+asyncpg://" + url[len("postgresql://"):]
-    return url
+    """Приводит DATABASE_URL к виду для SQLAlchemy async.
+
+    Render выдает postgres://... или postgresql://..., а нужен postgresql+asyncpg://...
+    При копировании с телефона в значение часто попадают пробелы, кавычки, невидимые символы,
+    префикс «DATABASE_URL=» или вся PSQL-команда — вытаскиваем из строки сам адрес.
+    """
+    raw = url or ""
+    match = _DB_URL_RE.search(raw)
+    if not match:
+        raise RuntimeError(describe_bad_database_url(raw))
+    url = match.group(0).rstrip(".,;)")
+    scheme, rest = url.split("://", 1)
+    scheme = scheme.lower()
+    if scheme in ("postgres", "postgresql"):
+        scheme = "postgresql+asyncpg"
+    return f"{scheme}://{rest}"
+
+
+def describe_bad_database_url(raw: str) -> str:
+    """Понятная ошибка без вывода пароля."""
+    value = raw.strip()
+    if not value:
+        return "DATABASE_URL пустой. Вставьте Internal Database URL базы PostgreSQL."
+    hint = ""
+    low = value.lower()
+    if low.startswith("pgpassword") or low.startswith("psql"):
+        hint = " Похоже, вставлена строка «PSQL Command» — нужна строка «Internal Database URL»."
+    elif low.startswith("dpg-"):
+        hint = " Похоже, вставлен только «Hostname» — нужна строка «Internal Database URL»."
+    elif "://" not in value:
+        hint = " В значении нет «postgresql://» — скопируйте «Internal Database URL» целиком."
+    return (
+        f"DATABASE_URL не похож на адрес PostgreSQL (длина {len(value)}, начинается с «{value[:6]}…»)."
+        + hint
+    )
 
 
 @dataclass(frozen=True)
