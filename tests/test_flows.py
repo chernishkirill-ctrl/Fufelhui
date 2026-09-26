@@ -401,3 +401,21 @@ async def test_recreate_deleted_topics(app, updates, session_factory, ctx):
         after = (await settings_service.load(s, ctx.config)).topics
     assert after["chat"] == 77
     assert all(after[k] != before[k] for k in ("base", "archive", "deals", "leads"))
+
+
+async def test_link_without_import_button_starts_import(app, updates, session_factory, monkeypatch):
+    await add_realtors(session_factory, R1)
+
+    async def fake_fetch(url):
+        return olx_html()
+
+    monkeypatch.setattr(parser_service, "fetch_html", fake_fetch)
+    await app.feed(updates.message(R1, "https://www.olx.ua/d/uk/obyavlenie/prodam-IDabc.html"))
+    assert "Проверьте данные объекта" in app.api.last_text(R1)
+    await app.feed(updates.callback(R1, FormCB(field="impsave").pack()))
+    async with session_factory() as s:
+        assert (await s.scalar(select(Property))).source_name == "OLX"
+
+    # клиенту ссылка ничего не импортирует
+    await app.feed(updates.message(STRANGER, "https://www.olx.ua/d/uk/obyavlenie/x-IDq.html"))
+    assert "Записаться на просмотр" in app.api.last_text(STRANGER)

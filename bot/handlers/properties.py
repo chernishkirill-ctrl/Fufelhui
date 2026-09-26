@@ -6,6 +6,7 @@ import re
 from decimal import Decimal
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -17,6 +18,7 @@ from bot.database.repositories import users as users_repo
 from bot.handlers.states import PropertyAdd, PropertyEdit, PropertyImport, PropertySearch
 from bot.keyboards.callbacks import DealCB, FormCB, LeadCB, PropCB
 from bot.keyboards.menus import btn, cancel_kb, choices_kb, home_btn, pager_row, skip_cancel_kb, url_btn
+from bot.middlewares.filters import IsStaff
 from bot.parsers.base import ParseError
 from bot.services import (
     cards,
@@ -862,6 +864,15 @@ async def start_import(event: Message | CallbackQuery, actor: Actor, state: FSMC
 async def cb_import(cq: CallbackQuery, actor: Actor, state: FSMContext) -> None:
     await start_import(cq, actor, state)
     await ack(cq)
+
+
+@router.message(StateFilter(None), F.text.regexp(r"https?://"), IsStaff())
+async def link_without_command(
+    message: Message, state: FSMContext, actor: Actor, session: AsyncSession, ctx: AppContext, rs: RuntimeSettings
+) -> None:
+    """Ссылка, отправленная боту без кнопки «Импорт», сразу запускает импорт объявления."""
+    await state.set_state(PropertyImport.url)
+    await import_url(message, state, actor, session, ctx, rs)
 
 
 @router.message(PropertyImport.url, F.text)
