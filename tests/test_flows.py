@@ -376,3 +376,28 @@ async def test_create_topics(app, updates, session_factory, ctx):
     async with session_factory() as s:
         rs = await settings_service.load(s, ctx.config)
         assert all(rs.topics[k] for k in ("base", "archive", "deals", "chat", "leads"))
+
+
+async def test_recreate_deleted_topics(app, updates, session_factory, ctx):
+    from dataclasses import replace
+
+    from bot.services import settings_service
+
+    ctx.config = replace(ctx.config, base_topic_id=None, archive_topic_id=None, deals_topic_id=None,
+                         chat_topic_id=77, leads_topic_id=None)
+    await app.feed(updates.callback(OWNER_ID, SettingsCB(action="topics").pack()))
+    assert len(app.api.of("CreateForumTopic")) == 4
+    async with session_factory() as s:
+        before = dict((await settings_service.load(s, ctx.config)).topics)
+
+    # Темы удалили в группе: обычное «Создать» ничего не делает и подсказывает про пересоздание
+    await app.feed(updates.callback(OWNER_ID, SettingsCB(action="topics").pack()))
+    assert len(app.api.of("CreateForumTopic")) == 4
+    assert any("Пересоздать темы" in t for t in app.api.texts(OWNER_ID))
+
+    await app.feed(updates.callback(OWNER_ID, SettingsCB(action="topics", key="reset").pack()))
+    assert len(app.api.of("CreateForumTopic")) == 8  # тема из окружения (chat) не трогается
+    async with session_factory() as s:
+        after = (await settings_service.load(s, ctx.config)).topics
+    assert after["chat"] == 77
+    assert all(after[k] != before[k] for k in ("base", "archive", "deals", "leads"))

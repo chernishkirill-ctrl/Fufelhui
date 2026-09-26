@@ -29,7 +29,7 @@ from bot.services.context import AppContext
 from bot.services.settings_service import TOGGLES, TOPIC_TITLES, RuntimeSettings
 from bot.utils.telegram import safe_call
 from bot.utils.text import esc, fmt_money_map, parse_int
-from bot.utils.timeutils import fmt_date, fmt_dt, local_today, make_period, parse_hhmm
+from bot.utils.timeutils import fmt_date, fmt_dt, make_period, parse_hhmm
 from bot.utils.ui import ack, show
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,8 @@ async def menu_deals(message: Message, actor: Actor, session: AsyncSession, stat
 @router.message(StateFilter("*"), F.text == menus.OWNER_REPORTS)
 async def menu_reports(message: Message, actor: Actor, session: AsyncSession, ctx: AppContext, state: FSMContext) -> None:
     await state.clear()
-    await reports_h.show_day(message, actor, session, ctx, local_today(ctx.config.tz))
+    # До 05:00 показываем отчеты за прошедший день — туда же записываются ночные отчеты
+    await reports_h.show_day(message, actor, session, ctx, reports_h.report_date_for_now(ctx))
 
 
 @router.message(StateFilter("*"), F.text == menus.OWNER_SETTINGS)
@@ -298,6 +299,7 @@ async def show_settings(event, ctx: AppContext, rs: RuntimeSettings) -> None:
         b.row(btn(f"{'✅' if rs.toggles[key] else '▫️'} {title}", SettingsCB(action="toggle", key=key)))
     b.row(btn("🕙 Время отчетов", SettingsCB(action="report_time")), btn("📨 Разослать запрос отчета сейчас", SettingsCB(action="remind_now")))
     b.row(btn("🧵 Создать темы в рабочем чате", SettingsCB(action="topics")), btn("🩺 Проверить подключение", SettingsCB(action="check")))
+    b.row(btn("♻️ Пересоздать темы (если удалили)", SettingsCB(action="topics", key="reset")))
     b.row(home_btn())
     await show(event, "\n".join(lines), b.as_markup())
 
@@ -353,14 +355,21 @@ async def cb_remind_now(cq: CallbackQuery, ctx: AppContext) -> None:
 
 
 @router.callback_query(SettingsCB.filter(F.action == "topics"))
-async def cb_create_topics(cq: CallbackQuery, session: AsyncSession, ctx: AppContext, rs: RuntimeSettings) -> None:
+async def cb_create_topics(cq: CallbackQuery, callback_data: SettingsCB, session: AsyncSession, ctx: AppContext, rs: RuntimeSettings) -> None:
     chat = rs.work_chat_id
     if not chat:
         return await ack(cq, "Сначала задайте WORK_CHAT_ID или выполните /bindchat в рабочем чате.", alert=True)
     await ack(cq, "Создаю темы…")
-    created, failed = [], []
+    reset = callback_data.key == "reset"
+    env_topics = {k for k, env in settings_service.TOPIC_KEYS.items() if getattr(ctx.config, f"{k}_topic_id")}
+    created, failed, skipped = [], [], []
     for key, title in TOPIC_TITLES.items():
-        if rs.topics.get(key):
+        if key in env_topics:
+            # ID из окружения (Render) бот менять не может
+            if reset:
+                skipped.append(title)
+            continue
+        if rs.topics.get(key) and not reset:
             continue
         topic = await safe_call("create_topic", ctx.bot.create_forum_topic, chat_id=chat, name=title)
         if topic:
@@ -370,6 +379,10 @@ async def cb_create_topics(cq: CallbackQuery, session: AsyncSession, ctx: AppCon
         else:
             failed.append(title)
     text = "🧵 Темы: " + (f"создано — {', '.join(created)}. " if created else "новых не создано. ")
+    if not created and not failed and not reset:
+        text += "\nВсе темы уже привязаны. Если вы удалили их в группе — нажмите «♻️ Пересоздать темы»."
+    if skipped:
+        text += f"\nℹ️ {', '.join(skipped)}: ID задан в переменных Render (*_TOPIC_ID) — очистите их там, чтобы бот мог пересоздать."
     if failed:
         text += f"\n⚠️ Не удалось: {', '.join(failed)}. Включите Topics в группе и дайте боту право «Управление темами»."
     await cq.message.answer(text)
