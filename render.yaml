@@ -36,6 +36,8 @@ services:
         sync: false
       - key: TELEGRAPH_TOKEN
         sync: false
+      - key: WEBAPP_SHORT_NAME
+        sync: false
       - key: AGENCY_NAME
         sync: false
       - key: DEFAULT_CITY

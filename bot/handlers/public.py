@@ -16,13 +16,13 @@ from aiogram.types import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.handlers.states import LeadBooking
-from bot.keyboards.callbacks import FormCB, LeadCB
+from bot.keyboards.callbacks import FormCB
 from bot.keyboards.menus import btn, choices_kb
-from bot.services import cards, lead_service, property_service, workchat_service
+from bot.services import cards, lead_actions, lead_service, property_service
 from bot.services.auth import Actor
 from bot.services.context import AppContext
 from bot.services.settings_service import RuntimeSettings
-from bot.utils.text import esc, find_phone, mask_phone
+from bot.utils.text import esc, find_phone
 from bot.utils.ui import ack
 
 logger = logging.getLogger(__name__)
@@ -160,9 +160,8 @@ async def booking_send(cq: CallbackQuery, state: FSMContext, session: AsyncSessi
         await cq.message.edit_text("😔 Объект уже неактуален.")
         return await ack(cq)
     try:
-        lead = await lead_service.create_lead(
-            session,
-            property_id=prop.id,
+        await lead_actions.submit_lead(
+            ctx, session, rs, prop,
             client_telegram_id=cq.from_user.id,
             client_username=cq.from_user.username,
             client_name=data.get("client_name"),
@@ -173,19 +172,6 @@ async def booking_send(cq: CallbackQuery, state: FSMContext, session: AsyncSessi
     except lead_service.LeadError as exc:
         await cq.message.edit_text(f"ℹ️ {esc(exc)}")
         return await ack(cq)
-    # Сохраняем заявку до отправки в Telegram, чтобы она не потерялась при сбое сети
-    await session.commit()
-    await session.refresh(lead)
-    logger.info("Заявка %s: клиент tg=%s, тел=%s", lead.code, "да" if lead.client_telegram_id else "нет", mask_phone(lead.phone))
-
-    posted = await workchat_service.post_lead(ctx, rs, lead)
-    if rs.notify_owner_leads or not posted:
-        await workchat_service.notify_owner(
-            ctx,
-            "📋 <b>Новая заявка</b>\n\n" + cards.lead_private_card(lead, ctx.config.tz)
-            + ("" if posted else "\n\n⚠️ Не удалось отправить в рабочий чат — проверьте настройки."),
-            InlineKeyboardMarkup(inline_keyboard=[[btn("Открыть заявку", LeadCB(action="open", id=lead.id))]]),
-        )
     await cq.message.edit_text(
         "🎉 <b>Спасибо! Заявка отправлена.</b>\n\nРиелтор свяжется с вами в ближайшее время."
     )

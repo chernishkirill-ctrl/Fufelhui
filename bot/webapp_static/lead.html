@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Запись на просмотр</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #111111);
+    --hint: var(--tg-theme-hint-color, #8a8a8a);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --field: var(--tg-theme-secondary-bg-color, #f1f1f4);
+    --danger: var(--tg-theme-destructive-text-color, #d93838);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .object { color: var(--hint); font-size: 14px; margin-bottom: 16px; min-height: 20px; }
+  .object b { color: var(--text); }
+  label { display: block; font-size: 13px; color: var(--hint); margin: 12px 0 6px; }
+  input, textarea {
+    width: 100%; border: 0; border-radius: 12px; padding: 12px 14px; font: inherit;
+    background: var(--field); color: var(--text); outline: none;
+  }
+  textarea { resize: none; height: 64px; }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; }
+  .ghost {
+    border: 0; border-radius: 12px; padding: 0 12px; font: inherit; font-size: 14px;
+    background: var(--field); color: var(--accent); white-space: nowrap;
+  }
+  .submit {
+    width: 100%; margin-top: 18px; border: 0; border-radius: 12px; padding: 14px;
+    font: inherit; font-weight: 600; background: var(--accent); color: var(--accent-text);
+  }
+  .submit:disabled { opacity: .6; }
+  .error { color: var(--danger); font-size: 14px; margin-top: 10px; min-height: 18px; }
+  .done { text-align: center; padding: 32px 8px; }
+  .done .big { font-size: 48px; }
+  .note { color: var(--hint); font-size: 12px; margin-top: 10px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="form-view">
+  <h1>📅 Запись на просмотр</h1>
+  <div class="object" id="object">Загрузка…</div>
+
+  <label for="name">Ваше имя</label>
+  <input id="name" autocomplete="name" maxlength="128" placeholder="Как к вам обращаться">
+
+  <label for="phone">Телефон для связи</label>
+  <div class="row">
+    <input id="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="32" placeholder="+380 __ ___ __ __">
+    <button class="ghost" id="share" type="button" hidden>Мой номер</button>
+  </div>
+
+  <label for="comment">Комментарий (необязательно)</label>
+  <textarea id="comment" maxlength="1000" placeholder="Удобное время, вопросы"></textarea>
+
+  <div class="error" id="error"></div>
+  <button class="submit" id="submit" type="button">Отправить заявку</button>
+  <div class="note">Риелтор свяжется с вами в ближайшее время</div>
+</div>
+
+<div id="done-view" class="done" hidden>
+  <div class="big">🎉</div>
+  <h1>Заявка отправлена!</h1>
+  <div class="object">Риелтор свяжется с вами в ближайшее время.</div>
+</div>
+
+<script>
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const $ = (id) => document.getElementById(id);
+  const initData = tg ? tg.initData : "";
+  const startParam = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param)
+    || new URLSearchParams(location.search).get("tgWebAppStartParam") || "";
+  const propertyId = startParam.replace(/^lead_/, "");
+
+  if (tg) {
+    tg.ready();
+    const u = tg.initDataUnsafe && tg.initDataUnsafe.user;
+    if (u) $("name").value = [u.first_name, u.last_name].filter(Boolean).join(" ");
+    if (typeof tg.requestContact === "function" && tg.isVersionAtLeast && tg.isVersionAtLeast("6.9")) {
+      $("share").hidden = false;
+    }
+  }
+
+  function showError(text) {
+    $("error").textContent = text || "";
+    if (text && tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+  }
+
+  async function loadObject() {
+    if (!/^\d+$/.test(propertyId)) { $("object").textContent = "Объект не найден"; return; }
+    try {
+      const r = await fetch("/api/webapp/property/" + propertyId);
+      const d = await r.json();
+      if (!d.ok) { $("object").textContent = d.error || "Объект не найден"; $("submit").disabled = true; return; }
+      const obj = $("object");
+      obj.textContent = "";
+      const b = document.createElement("b");
+      b.textContent = d.title + " — " + d.price;
+      obj.appendChild(b);
+      const extra = [d.details, d.location].filter(Boolean).join(" · ");
+      if (extra) obj.appendChild(document.createTextNode(" · " + extra));
+    } catch (e) {
+      $("object").textContent = "Нет связи с сервером, попробуйте ещё раз";
+    }
+  }
+
+  $("share").addEventListener("click", () => {
+    tg.requestContact((shared, res) => {
+      const phone = shared && res && res.responseUnsafe && res.responseUnsafe.contact
+        && res.responseUnsafe.contact.phone_number;
+      if (phone) $("phone").value = phone.startsWith("+") ? phone : "+" + phone;
+    });
+  });
+
+  $("submit").addEventListener("click", async () => {
+    showError("");
+    const name = $("name").value.trim();
+    const phone = $("phone").value.trim();
+    if (name.length < 2) return showError("Введите имя");
+    if (phone.replace(/\D/g, "").length < 9) return showError("Введите номер телефона");
+    if (!initData) return showError("Откройте форму из Telegram");
+    $("submit").disabled = true;
+    $("submit").textContent = "Отправляем…";
+    try {
+      const r = await fetch("/api/webapp/lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ init_data: initData, property_id: propertyId, name, phone, comment: $("comment").value.trim() }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || "Не удалось отправить заявку");
+      $("form-view").hidden = true;
+      $("done-view").hidden = false;
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      if (tg) setTimeout(() => tg.close(), 2500);
+    } catch (e) {
+      showError(e.message || "Не удалось отправить заявку, попробуйте ещё раз");
+      $("submit").disabled = false;
+      $("submit").textContent = "Отправить заявку";
+    }
+  });
+
+  loadObject();
+</script>
+</body>
+</html>
