@@ -88,6 +88,8 @@ class Config:
     report_time: str = "22:00"
 
     webhook_base_url: str | None = None
+    # Короткое имя Mini App из @BotFather (/newapp) — форма записи на просмотр во всплывающем окне
+    webapp_short_name: str | None = None
     webhook_path: str = "/telegram/webhook"
     webhook_secret: str | None = None
     cron_secret: str | None = None
@@ -162,6 +164,7 @@ def load_config() -> Config:
         timezone=os.getenv("TIMEZONE", "").strip() or "Europe/Kyiv",
         report_time=os.getenv("REPORT_TIME", "").strip() or "22:00",
         webhook_base_url=webhook_base or None,
+        webapp_short_name=os.getenv("WEBAPP_SHORT_NAME", "").strip().strip("/") or None,
         webhook_path=os.getenv("WEBHOOK_PATH", "").strip() or "/telegram/webhook",
         webhook_secret=webhook_secret,
         cron_secret=os.getenv("CRON_SECRET", "").strip() or None,

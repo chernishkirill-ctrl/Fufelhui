@@ -262,19 +262,49 @@ def public_caption(prop: Property, agency_name: str | None = None, limit: int = 
     return text[:limit]
 
 
-def telegraph_nodes(prop: Property, photo_urls: list[str]) -> list:
+def public_post_text(prop: Property, agency_tag: str | None = None, telegraph_url: str | None = None) -> str:
+    """Короткий пост для канала: суть объекта + хэштеги; всё подробное — на Telegraph-странице.
+
+    ТОЛЬКО публичные данные: без собственника, телефонов, точного адреса, риелтора и комиссии.
+    """
+    offer = "продажа" if prop.offer_type == OfferType.SALE else "аренда"
+    lines = [f"🏠 <b>{esc(headline(prop))}</b> · {offer}"]
+    details = []
+    if prop.area:
+        details.append(f"📐 {fmt_number(prop.area)} м²")
+    fl = floor_label(prop)
+    if fl:
+        details.append(f"🏢 этаж {fl}")
+    if details:
+        lines.append(" · ".join(details))
+    lines.append(f"💰 <b>{esc(price_label(prop))}</b>")
+    loc = location_line(prop, public=True)
+    if loc:
+        lines.append(f"📍 {esc(loc)}")
+    lines += ["", public_hashtags(prop, agency_tag)]
+    if telegraph_url:
+        lines.append(f'<a href="{esc(telegraph_url)}">📸 Фото и подробное описание</a>')
+    return "\n".join(lines)
+
+
+def telegraph_nodes(prop: Property, photo_urls: list[str], booking_url: str | None = None) -> list:
     """Контент Telegraph-страницы (без внутренних данных CRM)."""
     nodes: list = []
     for url in photo_urls[:20]:
         nodes.append({"tag": "figure", "children": [{"tag": "img", "attrs": {"src": url}}]})
-    info = [headline(prop), location_line(prop, public=True), price_label(prop)]
+    nodes.append({"tag": "h3", "children": [headline(prop)]})
+    info = [f"💰 Цена: {price_label(prop)}"]
+    loc = location_line(prop, public=True)
+    if loc:
+        info.append(f"📍 Расположение: {loc}")
+    if prop.rooms:
+        info.append(f"🚪 Комнат: {prop.rooms}")
     if prop.area:
-        info.append(f"Площадь: {fmt_number(prop.area)} м²")
+        info.append(f"📐 Площадь: {fmt_number(prop.area)} м²")
     fl = floor_label(prop)
     if fl:
-        info.append(f"Этаж: {fl}")
-    nodes.append({"tag": "h4", "children": [f"{prop.code}"]})
-    for line in filter(None, info):
+        info.append(f"🏢 Этаж: {fl}")
+    for line in info:
         nodes.append({"tag": "p", "children": [line]})
     desc = clean_public_text(prop.description, limit=3000, remove=[prop.owner_name, prop.owner_phone, prop.address])
     if desc:
@@ -291,6 +321,10 @@ def telegraph_nodes(prop: Property, photo_urls: list[str]) -> list:
         ]
         if items:
             nodes.append({"tag": "ul", "children": items})
+    if booking_url:
+        nodes.append({"tag": "h4", "children": ["Записаться на просмотр"]})
+        nodes.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": booking_url}, "children": ["📅 Оставить заявку"]}]})
+    nodes.append({"tag": "p", "children": [{"tag": "i", "children": [f"№ {prop.code}"]}]})
     return nodes
 
 

@@ -265,6 +265,14 @@ def _id(value) -> str:
     return f"<code>{value}</code>" if value not in (None, "") else "❌ не задан"
 
 
+def _webapp_line(ctx: AppContext) -> str:
+    if ctx.config.webapp_short_name:
+        return f"Форма записи (Mini App): ✅ <code>{esc(ctx.config.webapp_short_name)}</code>"
+    url = ctx.public_url("/webapp/lead")
+    hint = f"\n  URL для @BotFather → /newapp: <code>{esc(url)}</code>" if url else ""
+    return "Форма записи (Mini App): ❌ не подключена — запись идет через чат с ботом" + hint
+
+
 async def show_settings(event, ctx: AppContext, rs: RuntimeSettings) -> None:
     cfg = ctx.config
     lines = [
@@ -280,6 +288,7 @@ async def show_settings(event, ctx: AppContext, rs: RuntimeSettings) -> None:
         lines.append(f"{title} ({env_name}): {_id(rs.topics.get(key))}")
     lines += [
         f"Часовой пояс: {esc(cfg.timezone)} · режим: {'webhook' if cfg.use_webhook else 'polling'}",
+        _webapp_line(ctx),
         f"Время запроса отчетов: <b>{esc(rs.report_time)}</b>",
         "",
         "<b>Переключатели</b> (нажмите, чтобы изменить):",

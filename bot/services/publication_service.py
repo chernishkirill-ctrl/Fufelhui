@@ -5,7 +5,13 @@ import json
 import logging
 
 import httpx
-from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from aiogram.types import (
+    BufferedInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    LinkPreviewOptions,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.models import Property, PropertyStatus, utcnow
@@ -15,6 +21,7 @@ from bot.services.context import AppContext
 from bot.services.parser_service import HEADERS
 from bot.services.settings_service import RuntimeSettings
 from bot.services.workchat_service import public_post_url
+from bot.utils import media
 from bot.utils.telegram import safe_call
 
 logger = logging.getLogger(__name__)
@@ -59,6 +66,52 @@ async def _telegraph_token(ctx: AppContext, session: AsyncSession, client: httpx
     return token
 
 
+def telegraph_title(prop: Property) -> str:
+    parts = [cards.headline(prop)]
+    if prop.area:
+        parts.append(f"{cards.fmt_number(prop.area)} м²")
+    return (", ".join(parts) + f" — {cards.price_label(prop)}")[:256]
+
+
+async def _upload_to_telegraph(client: httpx.AsyncClient, data: bytes) -> str | None:
+    try:
+        resp = await client.post("https://telegra.ph/upload", files={"file": ("photo.jpg", data, "image/jpeg")})
+        result = resp.json()
+        if isinstance(result, list) and result and result[0].get("src"):
+            return "https://telegra.ph" + result[0]["src"]
+    except (httpx.HTTPError, ValueError):
+        pass
+    return None
+
+
+async def telegraph_photo_urls(ctx: AppContext, client: httpx.AsyncClient, prop: Property) -> list[str]:
+    """URL фото для Telegraph. Фото с сайтов берутся как есть; фото, отправленные в бота,
+    загружаются в Telegraph, а если это недоступно — отдаются через подписанную ссылку нашего сервера."""
+    urls: list[str] = []
+    for ref in (prop.photos or [])[:20]:
+        if not isinstance(ref, str):
+            continue
+        if ref.startswith("http"):
+            urls.append(ref)
+            continue
+        if not ref.startswith("tg:"):
+            continue
+        file_id = ref[3:]
+        url = None
+        try:
+            file = await ctx.bot.get_file(file_id)
+            buf = await ctx.bot.download_file(file.file_path)
+            if buf is not None:
+                url = await _upload_to_telegraph(client, buf.read())
+        except Exception as exc:  # noqa: BLE001 - фото не должно ломать публикацию
+            logger.warning("Telegraph: не удалось загрузить фото из Telegram: %s", type(exc).__name__)
+        if url is None:
+            url = ctx.public_url(media.media_path(ctx.config.bot_token, file_id))
+        if url:
+            urls.append(url)
+    return urls
+
+
 async def create_telegraph_page(ctx: AppContext, session: AsyncSession, prop: Property) -> str | None:
     """Создает страницу с фото и описанием. Внутренние данные CRM не передаются."""
     try:
@@ -67,8 +120,9 @@ async def create_telegraph_page(ctx: AppContext, session: AsyncSession, prop: Pr
             if not token:
                 logger.warning("Telegraph: не удалось получить токен")
                 return None
-            content = cards.telegraph_nodes(prop, photo_urls(prop))
-            title = f"{cards.headline(prop)} — {prop.code}"[:256]
+            photos = await telegraph_photo_urls(ctx, client, prop)
+            content = cards.telegraph_nodes(prop, photos, booking_url=ctx.booking_link(prop.id))
+            title = telegraph_title(prop)
             resp = await client.post(
                 f"{TELEGRAPH_API}/createPage",
                 data={
@@ -91,14 +145,11 @@ async def create_telegraph_page(ctx: AppContext, session: AsyncSession, prop: Pr
 # ---------------- публичный канал ----------------
 
 def public_keyboard(ctx: AppContext, prop: Property) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    if prop.telegraph_url:
-        rows.append([InlineKeyboardButton(text="📸 Подробнее", url=prop.telegraph_url)])
+    row = [InlineKeyboardButton(text="📅 Записаться на просмотр", url=ctx.booking_link(prop.id))]
     map_link = cards.map_url(prop)
     if map_link:
-        rows.append([InlineKeyboardButton(text="📍 На карте", url=map_link)])
-    rows.append([InlineKeyboardButton(text="📅 Записаться на просмотр", url=ctx.deep_link(f"lead_{prop.id}"))])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+        row.append(InlineKeyboardButton(text="📍 На карте", url=map_link))
+    return InlineKeyboardMarkup(inline_keyboard=[row])
 
 
 async def _download(url: str) -> bytes | None:
@@ -134,24 +185,38 @@ async def publish(ctx: AppContext, session: AsyncSession, rs: RuntimeSettings, p
     if prop.public_message_id:
         await unpublish(ctx, session, prop, user_id, record=False)
 
-    if rs.create_telegraph and (photo_urls(prop) or prop.description):
+    if rs.create_telegraph:
         url = await create_telegraph_page(ctx, session, prop)
         if url:
             prop.telegraph_url = url
 
-    caption = cards.public_caption(prop, ctx.config.agency_hashtag)
     keyboard = public_keyboard(ctx, prop)
-    refs = photo_refs(prop)
     main_msg = None
     extra_ids: list[int] = []
 
-    if rs.publish_album and len(refs) >= 2:
+    if prop.telegraph_url:
+        # Основной формат: короткий текст, под ним превью Telegraph-страницы с фото, ниже кнопки
+        main_msg = await safe_call(
+            "publish_post",
+            ctx.bot.send_message,
+            chat_id=channel,
+            text=cards.public_post_text(prop, ctx.config.agency_hashtag, prop.telegraph_url),
+            reply_markup=keyboard,
+            link_preview_options=LinkPreviewOptions(
+                url=prop.telegraph_url, prefer_large_media=True, show_above_text=False
+            ),
+        )
+
+    # Запасной формат (Telegraph недоступен): фото с подписью
+    caption = cards.public_caption(prop, ctx.config.agency_hashtag)
+    refs = photo_refs(prop)
+    if main_msg is None and rs.publish_album and len(refs) >= 2:
         # Объекты aiogram неизменяемы — подпись задаем при создании первого элемента
-        media = [
+        media_items = [
             InputMediaPhoto(media=r, caption=caption, parse_mode="HTML") if i == 0 else InputMediaPhoto(media=r)
             for i, r in enumerate(refs[:10])
         ]
-        album = await safe_call("publish_album", ctx.bot.send_media_group, chat_id=channel, media=media)
+        album = await safe_call("publish_album", ctx.bot.send_media_group, chat_id=channel, media=media_items)
         if album:
             extra_ids = [m.message_id for m in album]
             main_msg = await safe_call(

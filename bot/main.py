@@ -28,6 +28,7 @@ from bot.middlewares.auth import DbSessionMiddleware
 from bot.services import settings_service
 from bot.services.context import AppContext
 from bot.services.scheduler import ReportScheduler
+from bot.webapp import setup_webapp
 
 logger = logging.getLogger("bot")
 
@@ -142,6 +143,7 @@ async def run(config: Config) -> None:
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
     cron_routes(app, ctx)
+    setup_webapp(app, ctx)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
