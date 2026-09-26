@@ -1,0 +1,53 @@
+# Render Blueprint: web-сервис (webhook) + PostgreSQL.
+# Deploy: Render Dashboard → New → Blueprint → выбрать репозиторий.
+services:
+  - type: web
+    name: realty-crm-bot
+    runtime: python
+    plan: starter          # always-on: нужен для запуска ежедневных отчетов в 22:00 по расписанию
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: alembic upgrade head
+    startCommand: python -m bot.main
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        fromDatabase:
+          name: realty-crm-db
+          property: connectionString
+      - key: BOT_TOKEN
+        sync: false
+      - key: OWNER_ID
+        sync: false
+      - key: WORK_CHAT_ID
+        sync: false
+      - key: PUBLIC_CHANNEL_ID
+        sync: false
+      - key: BASE_TOPIC_ID
+        sync: false
+      - key: ARCHIVE_TOPIC_ID
+        sync: false
+      - key: DEALS_TOPIC_ID
+        sync: false
+      - key: CHAT_TOPIC_ID
+        sync: false
+      - key: LEADS_TOPIC_ID
+        sync: false
+      - key: TELEGRAPH_TOKEN
+        sync: false
+      - key: AGENCY_NAME
+        sync: false
+      - key: DEFAULT_CITY
+        value: Днепр
+      - key: TIMEZONE
+        value: Europe/Kyiv
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+
+databases:
+  - name: realty-crm-db
+    plan: basic-256mb
+    databaseName: crm
