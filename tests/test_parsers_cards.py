@@ -160,7 +160,7 @@ def sample_property() -> Property:
 def test_public_caption_has_no_private_data():
     prop = sample_property()
     text = cards.public_caption(prop, "Nestima")
-    assert "OBJ-000125" in text and "$45 000" in text and "#Слобожанский" in text
+    assert "OBJ-000125" in text and "$45 000" in text and "#Слобожанський" in text and "#Дніпро" in text
     for secret in ("Петр", "+380671112233", "торг", "Тайная", "комисси"):
         assert secret not in text
     assert len(text) <= 1024

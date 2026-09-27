@@ -29,24 +29,24 @@ def alerts(api) -> list[str]:
 
 async def test_access_control(app, updates, session_factory):
     await app.feed(updates.message(STRANGER, "/start"))
-    assert "Записаться на просмотр" in app.api.last_text(STRANGER)
+    assert "Записатися на перегляд" in app.api.last_text(STRANGER)
 
     # чужой пользователь жмет админские кнопки и шлет тексты меню
     await app.feed(updates.callback(STRANGER, RealtorCB(action="list").pack()))
     await app.feed(updates.callback(STRANGER, SettingsCB(action="toggle", key="auto_publish").pack()))
     await app.feed(updates.callback(STRANGER, PropCB(action="menu").pack()))
-    assert alerts(app.api)[-3:] == ["Доступ запрещен."] * 3
+    assert alerts(app.api)[-3:] == ["Доступ заборонено."] * 3
     await app.feed(updates.message(STRANGER, menus.OWNER_STATS))
     assert "Статистика" not in app.api.last_text(STRANGER)
     await app.feed(updates.message(STRANGER, "/start obj_1"))
-    assert app.api.last_text(STRANGER) == "Доступ запрещен."
+    assert app.api.last_text(STRANGER) == "Доступ заборонено."
     await app.feed(updates.message(STRANGER, "/admin"))
-    assert app.api.last_text(STRANGER) == "Доступ запрещен."
+    assert app.api.last_text(STRANGER) == "Доступ заборонено."
 
     # риелтор не может пользоваться пультом владельца
     await add_realtors(session_factory, R1)
     await app.feed(updates.callback(R1, SettingsCB(action="toggle", key="auto_publish").pack()))
-    assert alerts(app.api)[-1] == "Доступ запрещен."
+    assert alerts(app.api)[-1] == "Доступ заборонено."
     await app.feed(updates.message(R1, menus.OWNER_REALTORS))
     assert "Риелторы" not in app.api.last_text(R1)
     async with session_factory() as s:
@@ -71,7 +71,7 @@ async def test_owner_adds_and_blocks_realtor(app, updates, session_factory):
 
     await app.feed(updates.callback(OWNER_ID, RealtorCB(action="block", id=uid).pack()))
     await app.feed(updates.message(R1, "/start"))
-    assert app.api.last_text(R1) == "Доступ запрещен."
+    assert app.api.last_text(R1) == "Доступ заборонено."
     await app.feed(updates.message(R1, menus.R_MY_PROPS))
     assert "Мои объекты" not in app.api.last_text(R1)
 
@@ -122,9 +122,9 @@ async def test_realtor_manual_add_and_permissions(app, updates, session_factory)
     await app.feed(updates.callback(R2, PropCB(action="ef", id=pid, arg="price").pack()))
     await app.feed(updates.callback(R2, PropCB(action="ss", id=pid, arg="archived").pack()))
     await app.feed(updates.callback(R2, PropCB(action="dely", id=pid).pack()))
-    assert alerts(app.api)[-3:] == ["Доступ запрещен."] * 3
+    assert alerts(app.api)[-3:] == ["Доступ заборонено."] * 3
     await app.feed(updates.message(R2, f"/start arch_{pid}"))
-    assert app.api.last_text(R2) == "Доступ запрещен."
+    assert app.api.last_text(R2) == "Доступ заборонено."
 
     # ответственный риелтор архивирует — объект остается в БД, карточка уходит в тему «Архив»
     await app.feed(updates.callback(R1, PropCB(action="ss", id=pid, arg="archived").pack()))
@@ -160,8 +160,8 @@ async def test_import_publish_lead_take_deal(app, updates, session_factory, monk
     for secret in ("+380", "Иван", "ivan_owner", "realtor"):
         assert secret not in photo.caption
     buttons = [b for row in photo.reply_markup.inline_keyboard for b in row]
-    assert any(b.text == "📅 Записаться на просмотр" and b.url.endswith(f"start=lead_{pid}") for b in buttons)
-    assert any(b.text == "📍 На карте" for b in buttons)
+    assert any(b.text == "📅 Записатися на перегляд" and b.url.endswith(f"start=lead_{pid}") for b in buttons)
+    assert any(b.text == "📍 На мапі" for b in buttons)
 
     # --- клиент записывается на просмотр ---
     await app.feed(updates.message(CLIENT, f"/start lead_{pid}", username="client_x"))
@@ -189,9 +189,9 @@ async def test_import_publish_lead_take_deal(app, updates, session_factory, monk
     dm = [c for c in app.api.of("SendMessage") if c.chat_id == R2]
     assert dm and "+380 50 123 45 67" in dm[-1].text  # данные клиента — назначенному риелтору
     await app.feed(updates.callback(R1, LeadCB(action="open", id=lid).pack()))
-    assert alerts(app.api)[-1] == "Доступ запрещен."  # другим риелторам — нет
+    assert alerts(app.api)[-1] == "Доступ заборонено."  # другим риелторам — нет
     await app.feed(updates.callback(STRANGER, LeadCB(action="take", id=lid).pack()))
-    assert alerts(app.api)[-1] == "Доступ запрещен."
+    assert alerts(app.api)[-1] == "Доступ заборонено."
 
     # --- сделку фиксирует R2 (объект чужой, клиент — его) ---
     await app.feed(updates.callback(R2, LeadCB(action="st", id=lid, arg="viewing_scheduled").pack()))
@@ -229,9 +229,9 @@ async def test_import_publish_lead_take_deal(app, updates, session_factory, monk
 
     # --- риелтор не может править/отменять сделку, владелец может ---
     await app.feed(updates.callback(R2, DealCB(action="cancely", id=did, arg="restore").pack()))
-    assert alerts(app.api)[-1] == "Доступ запрещен."
+    assert alerts(app.api)[-1] == "Доступ заборонено."
     await app.feed(updates.callback(R1, DealCB(action="open", id=did).pack()))
-    assert alerts(app.api)[-1] == "Доступ запрещен."
+    assert alerts(app.api)[-1] == "Доступ заборонено."
     await app.feed(updates.callback(OWNER_ID, DealCB(action="cancely", id=did, arg="restore").pack()))
     async with session_factory() as s:
         assert (await s.get(Deal, did)).status == DealStatus.CANCELLED
@@ -376,3 +376,46 @@ async def test_create_topics(app, updates, session_factory, ctx):
     async with session_factory() as s:
         rs = await settings_service.load(s, ctx.config)
         assert all(rs.topics[k] for k in ("base", "archive", "deals", "chat", "leads"))
+
+
+async def test_recreate_deleted_topics(app, updates, session_factory, ctx):
+    from dataclasses import replace
+
+    from bot.services import settings_service
+
+    ctx.config = replace(ctx.config, base_topic_id=None, archive_topic_id=None, deals_topic_id=None,
+                         chat_topic_id=77, leads_topic_id=None)
+    await app.feed(updates.callback(OWNER_ID, SettingsCB(action="topics").pack()))
+    assert len(app.api.of("CreateForumTopic")) == 4
+    async with session_factory() as s:
+        before = dict((await settings_service.load(s, ctx.config)).topics)
+
+    # Темы удалили в группе: обычное «Создать» ничего не делает и подсказывает про пересоздание
+    await app.feed(updates.callback(OWNER_ID, SettingsCB(action="topics").pack()))
+    assert len(app.api.of("CreateForumTopic")) == 4
+    assert any("Пересоздать темы" in t for t in app.api.texts(OWNER_ID))
+
+    await app.feed(updates.callback(OWNER_ID, SettingsCB(action="topics", key="reset").pack()))
+    assert len(app.api.of("CreateForumTopic")) == 8  # тема из окружения (chat) не трогается
+    async with session_factory() as s:
+        after = (await settings_service.load(s, ctx.config)).topics
+    assert after["chat"] == 77
+    assert all(after[k] != before[k] for k in ("base", "archive", "deals", "leads"))
+
+
+async def test_link_without_import_button_starts_import(app, updates, session_factory, monkeypatch):
+    await add_realtors(session_factory, R1)
+
+    async def fake_fetch(url):
+        return olx_html()
+
+    monkeypatch.setattr(parser_service, "fetch_html", fake_fetch)
+    await app.feed(updates.message(R1, "https://www.olx.ua/d/uk/obyavlenie/prodam-IDabc.html"))
+    assert "Проверьте данные объекта" in app.api.last_text(R1)
+    await app.feed(updates.callback(R1, FormCB(field="impsave").pack()))
+    async with session_factory() as s:
+        assert (await s.scalar(select(Property))).source_name == "OLX"
+
+    # клиенту ссылка ничего не импортирует
+    await app.feed(updates.message(STRANGER, "https://www.olx.ua/d/uk/obyavlenie/x-IDq.html"))
+    assert "Записатися на перегляд" in app.api.last_text(STRANGER)

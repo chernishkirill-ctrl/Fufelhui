@@ -72,9 +72,9 @@ def build_dispatcher(ctx: AppContext, scheduler: ReportScheduler | None = None) 
         update = event.update
         try:
             if update.callback_query:
-                await update.callback_query.answer("⚠️ Произошла ошибка. Попробуйте еще раз.", show_alert=True)
+                await update.callback_query.answer("⚠️ Сталася помилка. Спробуйте ще раз.", show_alert=True)
             elif update.message and update.message.chat.type == "private":
-                await update.message.answer("⚠️ Произошла ошибка. Попробуйте еще раз или нажмите /cancel.")
+                await update.message.answer("⚠️ Сталася помилка. Спробуйте ще раз або натисніть /cancel.")
         except Exception:  # noqa: BLE001
             pass
         return True
@@ -86,10 +86,10 @@ async def set_commands(bot: Bot) -> None:
     try:
         await bot.set_my_commands(
             [
-                BotCommand(command="menu", description="Главное меню"),
-                BotCommand(command="cancel", description="Отменить действие"),
-                BotCommand(command="help", description="Помощь"),
-                BotCommand(command="id", description="Мой Telegram ID"),
+                BotCommand(command="menu", description="Головне меню"),
+                BotCommand(command="cancel", description="Скасувати дію"),
+                BotCommand(command="help", description="Допомога"),
+                BotCommand(command="id", description="Мій Telegram ID"),
             ]
         )
     except Exception as exc:  # noqa: BLE001

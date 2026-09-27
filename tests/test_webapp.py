@@ -66,11 +66,13 @@ async def test_channel_post_short_text_with_telegraph_preview(ctx, session_facto
     assert post.link_preview_options.url == "https://telegra.ph/Kvartira-09-26"
     assert post.link_preview_options.prefer_large_media and not post.link_preview_options.show_above_text
     text = post.text
-    assert "2-комнатная квартира" in text and "56 м²" in text and "$45 000" in text and "#Соборный" in text
+    assert "2-кімнатна квартира" in text and "56 м²" in text and "поверх 5/9" in text and "$45 000" in text
+    assert "#Соборний" in text and "#Дніпро" in text and "#2кімн" in text and "#продаж" in text
+    assert "Соборний район, Дніпро" in text and "📸 Фото та детальний опис" in text
     for secret in ("Петр", "+380", "Тайная", "Светлая квартира"):
         assert secret not in text  # описание и приватные данные — не в посте
     buttons = post.reply_markup.inline_keyboard
-    assert len(buttons) == 1 and [b.text for b in buttons[0]] == ["📅 Записаться на просмотр", "📍 На карте"]
+    assert len(buttons) == 1 and [b.text for b in buttons[0]] == ["📅 Записатися на перегляд", "📍 На мапі"]
     assert buttons[0][0].url == f"https://t.me/crm_test_bot/zapis?startapp=lead_{pid}&mode=compact"
 
 

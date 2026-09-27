@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, ReplyKey
 
 logger = logging.getLogger(__name__)
 
-ACCESS_DENIED = "Доступ запрещен."
+ACCESS_DENIED = "Доступ заборонено."  # может увидеть клиент — на украинском
 
 
 async def show(

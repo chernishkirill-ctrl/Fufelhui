@@ -67,10 +67,10 @@ async def _telegraph_token(ctx: AppContext, session: AsyncSession, client: httpx
 
 
 def telegraph_title(prop: Property) -> str:
-    parts = [cards.headline(prop)]
+    parts = [cards.headline_uk(prop)]
     if prop.area:
         parts.append(f"{cards.fmt_number(prop.area)} м²")
-    return (", ".join(parts) + f" — {cards.price_label(prop)}")[:256]
+    return (", ".join(parts) + f" — {cards.price_label_uk(prop)}")[:256]
 
 
 async def _upload_to_telegraph(client: httpx.AsyncClient, data: bytes) -> str | None:
@@ -145,10 +145,10 @@ async def create_telegraph_page(ctx: AppContext, session: AsyncSession, prop: Pr
 # ---------------- публичный канал ----------------
 
 def public_keyboard(ctx: AppContext, prop: Property) -> InlineKeyboardMarkup:
-    row = [InlineKeyboardButton(text="📅 Записаться на просмотр", url=ctx.booking_link(prop.id))]
+    row = [InlineKeyboardButton(text="📅 Записатися на перегляд", url=ctx.booking_link(prop.id))]
     map_link = cards.map_url(prop)
     if map_link:
-        row.append(InlineKeyboardButton(text="📍 На карте", url=map_link))
+        row.append(InlineKeyboardButton(text="📍 На мапі", url=map_link))
     return InlineKeyboardMarkup(inline_keyboard=[row])
 
 
@@ -223,7 +223,7 @@ async def publish(ctx: AppContext, session: AsyncSession, rs: RuntimeSettings, p
                 "publish_buttons",
                 ctx.bot.send_message,
                 chat_id=channel,
-                text=f"👆 {prop.code} · {cards.price_label(prop)}",
+                text=f"👆 {prop.code} · {cards.price_label_uk(prop)}",
                 reply_markup=keyboard,
             )
     if main_msg is None:

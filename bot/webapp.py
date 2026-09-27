@@ -52,21 +52,21 @@ def setup_webapp(app: web.Application, ctx: AppContext) -> None:
         async with ctx.session_factory() as session:
             prop = await property_service.get_property(session, prop_id)
             if prop is None or prop.is_archived:
-                return _json_error("Объект уже неактуален", 404)
+                return _json_error("Об'єкт вже неактуальний", 404)
             # Только публичные данные
             details = []
             if prop.area:
                 details.append(f"{cards.fmt_number(prop.area)} м²")
-            floor = cards.floor_label(prop)
+            floor = cards.floor_label_uk(prop)
             if floor:
-                details.append(f"этаж {floor}")
+                details.append(f"поверх {floor}")
             return web.json_response(
                 {
                     "ok": True,
                     "code": prop.code,
-                    "title": cards.headline(prop),
-                    "price": cards.price_label(prop),
-                    "location": cards.location_line(prop, public=True),
+                    "title": cards.headline_uk(prop),
+                    "price": cards.price_label_uk(prop),
+                    "location": cards.location_line_uk(prop),
                     "details": " · ".join(details),
                 }
             )
@@ -82,30 +82,30 @@ def setup_webapp(app: web.Application, ctx: AppContext) -> None:
             init = safe_parse_webapp_init_data(ctx.config.bot_token, str(body.get("init_data") or ""))
         except ValueError:
             logger.warning("Mini App: неверная подпись initData")
-            return _json_error("Откройте форму из Telegram", 403)
+            return _json_error("Відкрийте форму з Telegram", 403)
         auth_ts = int(init.auth_date.timestamp())
         if time.time() - auth_ts > INIT_DATA_MAX_AGE:
-            return _json_error("Сессия устарела, откройте форму заново", 403)
+            return _json_error("Сесія застаріла, відкрийте форму ще раз", 403)
         user = init.user
         if user is None:
-            return _json_error("Откройте форму из Telegram", 403)
+            return _json_error("Відкрийте форму з Telegram", 403)
 
         prop_id = _parse_property_id(str(body.get("property_id") or init.start_param or ""))
         name = str(body.get("name") or "").strip()[:128]
         phone_raw = str(body.get("phone") or "").strip()[:64]
         comment = str(body.get("comment") or "").strip()[:1000] or None
         if prop_id is None:
-            return _json_error("Не указан объект")
+            return _json_error("Не вказано об'єкт")
         if len(name) < 2:
-            return _json_error("Введите имя")
+            return _json_error("Вкажіть ім'я")
         phone = find_phone(phone_raw)
         if not phone:
-            return _json_error("Введите номер телефона, например +380 67 123 45 67")
+            return _json_error("Вкажіть номер телефону, наприклад +380 67 123 45 67")
 
         async with ctx.session_factory() as session:
             prop = await property_service.get_property(session, prop_id)
             if prop is None or prop.is_archived:
-                return _json_error("Объект уже неактуален", 404)
+                return _json_error("Об'єкт вже неактуальний", 404)
             rs = await settings_service.load(session, ctx.config)
             try:
                 lead = await lead_actions.submit_lead(

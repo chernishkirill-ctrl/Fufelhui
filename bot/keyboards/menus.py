@@ -27,6 +27,7 @@ R_STATS = "📊 Моя статистика"
 R_REPORT = "📝 Отчет за день"
 
 CANCEL_TEXT = "✖️ Отмена"
+CANCEL_TEXT_UK = "✖️ Скасувати"  # для клиентов
 
 
 def owner_menu() -> ReplyKeyboardMarkup:
@@ -77,7 +78,14 @@ def skip_cancel_kb(skip_text: str = "⏭ Пропустить") -> InlineKeyboar
     )
 
 
-def choices_kb(field: str, options: list[tuple[str, str]], per_row: int = 2, cancel: bool = True, skip: bool = False) -> InlineKeyboardMarkup:
+def choices_kb(
+    field: str,
+    options: list[tuple[str, str]],
+    per_row: int = 2,
+    cancel: bool = True,
+    skip: bool = False,
+    cancel_text: str = CANCEL_TEXT,
+) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for text, value in options:
         b.add(btn(text, FormCB(field=field, value=value)))
@@ -86,7 +94,7 @@ def choices_kb(field: str, options: list[tuple[str, str]], per_row: int = 2, can
     if skip:
         extra.append(btn("⏭ Пропустить", FormCB(field="skip")))
     if cancel:
-        extra.append(btn(CANCEL_TEXT, FormCB(field="cancel")))
+        extra.append(btn(cancel_text, FormCB(field="cancel")))
     if extra:
         b.row(*extra)
     return b.as_markup()
