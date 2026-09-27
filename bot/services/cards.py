@@ -8,6 +8,7 @@ from bot.database.models import Deal, Lead, OfferType, Property, PropertyHistory
 from bot.services.deal_service import DEAL_STATUS_LABELS, DEAL_TYPE_LABELS
 from bot.services.lead_service import LEAD_STATUS_LABELS
 from bot.services.property_service import EDITABLE_FIELDS, OFFER_LABELS, STATUS_LABELS, PropertySummary
+from bot.utils import uk
 from bot.utils.text import clean_public_text, esc, fmt_money, fmt_number, hashtag, truncate
 from bot.utils.timeutils import fmt_date, fmt_dt
 
@@ -218,17 +219,59 @@ def history_text(prop: Property, history: list[PropertyHistory], tz: ZoneInfo) -
     return "\n".join(lines)[:4000]
 
 
-# ---------------- публичные материалы ----------------
+# ---------------- публичные материалы (на украинском) ----------------
+# Всё, что видит клиент, — на украинском языке (требование законодательства Украины).
+
+def headline_uk(prop: Property) -> str:
+    if prop.rooms or prop.property_type:
+        return uk.rooms_title(prop.rooms, prop.property_type)
+    return prop.title or "Об'єкт"
+
+
+def price_label_uk(prop: Property) -> str:
+    if prop.price is None:
+        return "ціна за запитом"
+    suffix = "/міс" if prop.offer_type == OfferType.RENT else ""
+    return fmt_money(prop.price, prop.currency) + suffix
+
+
+def floor_label_uk(prop: Property) -> str | None:
+    if prop.floor is None and prop.floors_total is None:
+        return None
+    if prop.floor is not None and prop.floors_total:
+        return f"{prop.floor}/{prop.floors_total}"
+    if prop.floor is not None:
+        return str(prop.floor)
+    return f"поверховість {prop.floors_total}"
+
+
+def location_line_uk(prop: Property) -> str:
+    parts = []
+    district = uk.place(prop.district)
+    if district:
+        parts.append(district if "район" in district.lower() else f"{district} район")
+    city = uk.place(prop.city)
+    if city:
+        parts.append(city)
+    return ", ".join(parts)
+
+
+def offer_uk(prop: Property) -> str:
+    return "продаж" if prop.offer_type == OfferType.SALE else "оренда"
+
+
 
 def public_hashtags(prop: Property, agency_tag: str | None = None) -> str:
     tags = []
-    if prop.district:
-        tags.append(hashtag(prop.district.replace(" район", "")))
-    if prop.city:
-        tags.append(hashtag(prop.city))
+    district = uk.place(prop.district)
+    if district:
+        tags.append(hashtag(district.replace(" район", "")))
+    city = uk.place(prop.city)
+    if city:
+        tags.append(hashtag(city))
     if prop.rooms:
-        tags.append(f"#{prop.rooms}комн")
-    tags.append("#продажа" if prop.offer_type == OfferType.SALE else "#аренда")
+        tags.append(f"#{prop.rooms}кімн")
+    tags.append(f"#{offer_uk(prop)}")
     tags.append(f"#{prop.code.replace('-', '')}")
     if agency_tag:
         tags.append(hashtag(agency_tag))
@@ -236,21 +279,21 @@ def public_hashtags(prop: Property, agency_tag: str | None = None) -> str:
 
 
 def public_caption(prop: Property, agency_name: str | None = None, limit: int = CAPTION_LIMIT) -> str:
-    """Публикация в канал. ТОЛЬКО публичные данные: без собственника, телефонов, риелтора, комиссии, адреса."""
-    offer = "Продажа" if prop.offer_type == OfferType.SALE else "Аренда"
-    head = [f"<b>{offer}: {esc(headline(prop))}</b>"]
-    loc = location_line(prop, public=True)
+    """Публикация с фото (запасной формат). ТОЛЬКО публичные данные: без собственника, телефонов,
+    риелтора, комиссии, адреса."""
+    head = [f"<b>{offer_uk(prop).capitalize()}: {esc(headline_uk(prop))}</b>"]
+    loc = location_line_uk(prop)
     if loc:
         head.append(f"📍 {esc(loc)}")
     details = []
     if prop.area:
         details.append(f"📐 {fmt_number(prop.area)} м²")
-    fl = floor_label(prop)
+    fl = floor_label_uk(prop)
     if fl:
-        details.append(f"🏢 этаж {fl}")
+        details.append(f"🏢 поверх {fl}")
     if details:
         head.append(" · ".join(details))
-    head.append(f"💰 <b>{esc(price_label(prop))}</b>")
+    head.append(f"💰 <b>{esc(price_label_uk(prop))}</b>")
     tail = ["", f"№ {prop.code}", public_hashtags(prop, agency_name)]
     base_len = len("\n".join(head + tail)) + 4
     desc = clean_public_text(prop.description, remove=[prop.owner_name, prop.owner_phone, prop.address])
@@ -267,23 +310,22 @@ def public_post_text(prop: Property, agency_tag: str | None = None, telegraph_ur
 
     ТОЛЬКО публичные данные: без собственника, телефонов, точного адреса, риелтора и комиссии.
     """
-    offer = "продажа" if prop.offer_type == OfferType.SALE else "аренда"
-    lines = [f"🏠 <b>{esc(headline(prop))}</b> · {offer}"]
+    lines = [f"🏠 <b>{esc(headline_uk(prop))}</b> · {offer_uk(prop)}"]
     details = []
     if prop.area:
         details.append(f"📐 {fmt_number(prop.area)} м²")
-    fl = floor_label(prop)
+    fl = floor_label_uk(prop)
     if fl:
-        details.append(f"🏢 этаж {fl}")
+        details.append(f"🏢 поверх {fl}")
     if details:
         lines.append(" · ".join(details))
-    lines.append(f"💰 <b>{esc(price_label(prop))}</b>")
-    loc = location_line(prop, public=True)
+    lines.append(f"💰 <b>{esc(price_label_uk(prop))}</b>")
+    loc = location_line_uk(prop)
     if loc:
         lines.append(f"📍 {esc(loc)}")
     lines += ["", public_hashtags(prop, agency_tag)]
     if telegraph_url:
-        lines.append(f'<a href="{esc(telegraph_url)}">📸 Фото и подробное описание</a>')
+        lines.append(f'<a href="{esc(telegraph_url)}">📸 Фото та детальний опис</a>')
     return "\n".join(lines)
 
 
@@ -292,23 +334,23 @@ def telegraph_nodes(prop: Property, photo_urls: list[str], booking_url: str | No
     nodes: list = []
     for url in photo_urls[:20]:
         nodes.append({"tag": "figure", "children": [{"tag": "img", "attrs": {"src": url}}]})
-    nodes.append({"tag": "h3", "children": [headline(prop)]})
-    info = [f"💰 Цена: {price_label(prop)}"]
-    loc = location_line(prop, public=True)
+    nodes.append({"tag": "h3", "children": [headline_uk(prop)]})
+    info = [f"💰 Ціна: {price_label_uk(prop)}"]
+    loc = location_line_uk(prop)
     if loc:
-        info.append(f"📍 Расположение: {loc}")
+        info.append(f"📍 Розташування: {loc}")
     if prop.rooms:
-        info.append(f"🚪 Комнат: {prop.rooms}")
+        info.append(f"🚪 Кімнат: {prop.rooms}")
     if prop.area:
-        info.append(f"📐 Площадь: {fmt_number(prop.area)} м²")
-    fl = floor_label(prop)
+        info.append(f"📐 Площа: {fmt_number(prop.area)} м²")
+    fl = floor_label_uk(prop)
     if fl:
-        info.append(f"🏢 Этаж: {fl}")
+        info.append(f"🏢 Поверх: {fl}")
     for line in info:
         nodes.append({"tag": "p", "children": [line]})
     desc = clean_public_text(prop.description, limit=3000, remove=[prop.owner_name, prop.owner_phone, prop.address])
     if desc:
-        nodes.append({"tag": "h4", "children": ["Описание"]})
+        nodes.append({"tag": "h4", "children": ["Опис"]})
         for para in desc.split("\n"):
             if para.strip():
                 nodes.append({"tag": "p", "children": [para.strip()]})
@@ -322,8 +364,8 @@ def telegraph_nodes(prop: Property, photo_urls: list[str], booking_url: str | No
         if items:
             nodes.append({"tag": "ul", "children": items})
     if booking_url:
-        nodes.append({"tag": "h4", "children": ["Записаться на просмотр"]})
-        nodes.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": booking_url}, "children": ["📅 Оставить заявку"]}]})
+        nodes.append({"tag": "h4", "children": ["Записатися на перегляд"]})
+        nodes.append({"tag": "p", "children": [{"tag": "a", "attrs": {"href": booking_url}, "children": ["📅 Залишити заявку"]}]})
     nodes.append({"tag": "p", "children": [{"tag": "i", "children": [f"№ {prop.code}"]}]})
     return nodes
 
@@ -339,10 +381,12 @@ def map_url(prop: Property) -> str | None:
     parts = []
     if prop.show_exact_location and prop.address:
         parts.append(prop.address)
-    if prop.district:
-        parts.append(prop.district if "район" in prop.district.lower() else f"{prop.district} район")
-    if prop.city:
-        parts.append(prop.city)
+    district = uk.place(prop.district)
+    if district:
+        parts.append(district if "район" in district.lower() else f"{district} район")
+    city = uk.place(prop.city)
+    if city:
+        parts.append(city)
     if not parts or (len(parts) == 1 and not prop.city and not prop.district):
         return None
     return "https://www.google.com/maps/search/?api=1&query=" + quote_plus(", ".join(parts))

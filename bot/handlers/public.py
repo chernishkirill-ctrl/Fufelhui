@@ -1,4 +1,6 @@
-"""Клиентская часть: запись на просмотр из публичного канала (deep-link ?start=lead_<id>)."""
+"""Клиентская часть: запись на просмотр из публичного канала (deep-link ?start=lead_<id>).
+
+Все тексты для клиента — на украинском языке."""
 from __future__ import annotations
 
 import logging
@@ -17,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.handlers.states import LeadBooking
 from bot.keyboards.callbacks import FormCB
-from bot.keyboards.menus import btn, choices_kb
+from bot.keyboards.menus import CANCEL_TEXT_UK, btn, choices_kb
 from bot.services import cards, lead_actions, lead_service, property_service
 from bot.services.auth import Actor
 from bot.services.context import AppContext
@@ -29,29 +31,29 @@ logger = logging.getLogger(__name__)
 router = Router(name="public")
 router.message.filter(F.chat.type == "private")
 
-SKIP_PHONE = "Пропустить"
-TIME_OPTIONS = [("Сегодня", "Сегодня"), ("Завтра", "Завтра"), ("В выходные", "В выходные"), ("Любое время", "Любое время")]
+SKIP_PHONE = "Пропустити"
+TIME_OPTIONS = [("Сьогодні", "Сьогодні"), ("Завтра", "Завтра"), ("У вихідні", "У вихідні"), ("Будь-коли", "Будь-коли")]
 
 CLIENT_HELP = (
-    "👋 Здравствуйте! Это бот агентства недвижимости.\n\n"
-    "Чтобы записаться на просмотр, откройте объявление в нашем канале и нажмите «📅 Записаться на просмотр»."
+    "👋 Вітаємо! Це бот агентства нерухомості.\n\n"
+    "Щоб записатися на перегляд, відкрийте оголошення в нашому каналі та натисніть «📅 Записатися на перегляд»."
 )
 
 
 async def start_booking(message: Message, state: FSMContext, session: AsyncSession, property_id: int) -> None:
     prop = await property_service.get_property(session, property_id)
     if prop is None or prop.is_archived:
-        await message.answer("😔 Этот объект уже неактуален. Посмотрите другие предложения в нашем канале.")
+        await message.answer("😔 Цей об'єкт вже неактуальний. Перегляньте інші пропозиції в нашому каналі.")
         return
     await state.clear()
     await state.set_state(LeadBooking.name)
     await state.update_data(property_id=prop.id)
     name = message.from_user.full_name if message.from_user else ""
-    kb = choices_kb("bname", [(f"✅ {name}", "tg")], per_row=1) if name else None
+    kb = choices_kb("bname", [(f"✅ {name}", "tg")], per_row=1, cancel_text=CANCEL_TEXT_UK) if name else None
     await message.answer(
-        "📅 <b>Запись на просмотр</b>\n\n"
+        "📅 <b>Запис на перегляд</b>\n\n"
         f"{cards.public_caption(prop, None, limit=700)}\n\n"
-        "Как к вам обращаться? Напишите имя или нажмите кнопку.",
+        "Як до вас звертатися? Напишіть ім'я або натисніть кнопку.",
         reply_markup=kb,
     )
 
@@ -59,12 +61,12 @@ async def start_booking(message: Message, state: FSMContext, session: AsyncSessi
 async def _ask_phone(event, state: FSMContext) -> None:
     await state.set_state(LeadBooking.phone)
     kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Отправить мой номер", request_contact=True)], [KeyboardButton(text=SKIP_PHONE)]],
+        keyboard=[[KeyboardButton(text="📱 Надіслати мій номер", request_contact=True)], [KeyboardButton(text=SKIP_PHONE)]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
     target = event.message if isinstance(event, CallbackQuery) else event
-    await target.answer("📞 Оставьте номер телефона для связи (или нажмите «Пропустить» — риелтор напишет вам в Telegram):", reply_markup=kb)
+    await target.answer("📞 Залиште номер телефону для зв'язку (або натисніть «Пропустити» — рієлтор напише вам у Telegram):", reply_markup=kb)
 
 
 @router.callback_query(LeadBooking.name, FormCB.filter(F.field == "bname"))
@@ -92,7 +94,7 @@ async def booking_phone(message: Message, state: FSMContext) -> None:
     if text != SKIP_PHONE:
         phone = find_phone(text)
         if not phone:
-            return await message.answer("Не похоже на номер телефона. Введите номер, например +380 67 123 45 67, или нажмите «Пропустить».")
+            return await message.answer("Це не схоже на номер телефону. Введіть номер, наприклад +380 67 123 45 67, або натисніть «Пропустити».")
         await state.update_data(phone=phone[:64])
     await _ask_time(message, state)
 
@@ -100,7 +102,7 @@ async def booking_phone(message: Message, state: FSMContext) -> None:
 async def _ask_time(message: Message, state: FSMContext) -> None:
     await state.set_state(LeadBooking.time)
     await message.answer("👌", reply_markup=ReplyKeyboardRemove())
-    await message.answer("🕒 Когда вам удобно посмотреть объект? Выберите или напишите дату и время:", reply_markup=choices_kb("btime", TIME_OPTIONS))
+    await message.answer("🕒 Коли вам зручно переглянути об'єкт? Оберіть або напишіть дату й час:", reply_markup=choices_kb("btime", TIME_OPTIONS, cancel_text=CANCEL_TEXT_UK))
 
 
 @router.callback_query(LeadBooking.time, FormCB.filter(F.field == "btime"))
@@ -118,7 +120,7 @@ async def booking_time(message: Message, state: FSMContext) -> None:
 
 async def _ask_comment(message: Message, state: FSMContext) -> None:
     await state.set_state(LeadBooking.comment)
-    await message.answer("💬 Комментарий или вопрос (необязательно):", reply_markup=choices_kb("bskip", [("⏭ Без комментария", "1")], per_row=1))
+    await message.answer("💬 Коментар або запитання (необов'язково):", reply_markup=choices_kb("bskip", [("⏭ Без коментаря", "1")], per_row=1, cancel_text=CANCEL_TEXT_UK))
 
 
 @router.callback_query(LeadBooking.comment, FormCB.filter(F.field == "bskip"))
@@ -137,16 +139,16 @@ async def _confirm(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await state.set_state(LeadBooking.confirm)
     lines = [
-        "✅ <b>Проверьте заявку</b>",
+        "✅ <b>Перевірте заявку</b>",
         "",
-        f"Имя: {esc(data.get('client_name') or '—')}",
-        f"Телефон: {esc(data.get('phone') or 'не указан')}",
-        f"Время: {esc(data.get('preferred_time') or '—')}",
+        f"Ім'я: {esc(data.get('client_name') or '—')}",
+        f"Телефон: {esc(data.get('phone') or 'не вказано')}",
+        f"Час: {esc(data.get('preferred_time') or '—')}",
     ]
     if data.get("comment"):
-        lines.append(f"Комментарий: {esc(data['comment'])}")
+        lines.append(f"Коментар: {esc(data['comment'])}")
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[btn("📨 Отправить заявку", FormCB(field="bsend"))], [btn("✖️ Отмена", FormCB(field="cancel"))]]
+        inline_keyboard=[[btn("📨 Надіслати заявку", FormCB(field="bsend"))], [btn(CANCEL_TEXT_UK, FormCB(field="cancel"))]]
     )
     await message.answer("\n".join(lines), reply_markup=kb)
 
@@ -157,7 +159,7 @@ async def booking_send(cq: CallbackQuery, state: FSMContext, session: AsyncSessi
     await state.clear()
     prop = await property_service.get_property(session, data.get("property_id", 0))
     if prop is None or prop.is_archived:
-        await cq.message.edit_text("😔 Объект уже неактуален.")
+        await cq.message.edit_text("😔 Об'єкт вже неактуальний.")
         return await ack(cq)
     try:
         await lead_actions.submit_lead(
@@ -173,6 +175,6 @@ async def booking_send(cq: CallbackQuery, state: FSMContext, session: AsyncSessi
         await cq.message.edit_text(f"ℹ️ {esc(exc)}")
         return await ack(cq)
     await cq.message.edit_text(
-        "🎉 <b>Спасибо! Заявка отправлена.</b>\n\nРиелтор свяжется с вами в ближайшее время."
+        "🎉 <b>Дякуємо! Заявку надіслано.</b>\n\nРієлтор зв'яжеться з вами найближчим часом."
     )
     await ack(cq)

@@ -15,7 +15,7 @@ from bot.services.context import AppContext
 
 logger = logging.getLogger(__name__)
 
-DB_DOWN_TEXT = "⚠️ База данных временно недоступна. Попробуйте через минуту — данные не потеряны."
+DB_DOWN_TEXT = "⚠️ Сервіс тимчасово недоступний. Спробуйте за хвилину — дані не втрачено."
 
 
 class DbSessionMiddleware(BaseMiddleware):

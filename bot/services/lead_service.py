@@ -38,7 +38,7 @@ MAX_OPEN_LEADS_PER_CLIENT = 5
 
 
 class LeadError(Exception):
-    pass
+    """Текст ошибки показывается клиенту — поэтому на украинском."""
 
 
 async def create_lead(
@@ -62,7 +62,7 @@ async def create_lead(
             )
         )
         if dup:
-            raise LeadError("У вас уже есть активная заявка на этот объект. Риелтор скоро свяжется с вами.")
+            raise LeadError("У вас вже є активна заявка на цей об'єкт. Рієлтор незабаром зв'яжеться з вами.")
         recent = await session.scalar(
             select(func.count(Lead.id)).where(
                 Lead.client_telegram_id == client_telegram_id,
@@ -70,7 +70,7 @@ async def create_lead(
             )
         )
         if (recent or 0) >= MAX_OPEN_LEADS_PER_CLIENT:
-            raise LeadError("Слишком много заявок за сутки. Попробуйте позже.")
+            raise LeadError("Забагато заявок за добу. Спробуйте пізніше.")
     lead = Lead(
         property_id=property_id,
         client_telegram_id=client_telegram_id,

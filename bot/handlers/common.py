@@ -101,16 +101,16 @@ async def cmd_start(message: Message, actor: Actor, state: FSMContext) -> None:
 @router.message(Command("cancel"), F.chat.type == "private")
 async def cmd_cancel(message: Message, actor: Actor, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Действие отменено.")
+    await message.answer("Действие отменено." if actor.is_staff else "Дію скасовано.")
     await send_home(message, actor)
 
 
 @router.callback_query(FormCB.filter(F.field == "cancel"))
 async def cb_cancel(cq: CallbackQuery, actor: Actor, state: FSMContext) -> None:
     await state.clear()
-    await ack(cq, "Отменено")
+    await ack(cq, "Отменено" if actor.is_staff else "Скасовано")
     try:
-        await cq.message.edit_text("Действие отменено.")
+        await cq.message.edit_text("Действие отменено." if actor.is_staff else "Дію скасовано.")
     except Exception:  # noqa: BLE001 - сообщение могло быть фото/устаревшим
         pass
     if isinstance(cq.message, Message):
@@ -187,7 +187,7 @@ async def fallback_message(message: Message, actor: Actor, state: FSMContext) ->
             await message.answer("Выберите действие в меню ниже 👇", reply_markup=menus.owner_menu() if actor.is_owner else menus.realtor_menu())
         return
     if await state.get_state():
-        await message.answer("Пожалуйста, ответьте на вопрос выше или нажмите /cancel.")
+        await message.answer("Будь ласка, дайте відповідь на запитання вище або натисніть /cancel.")
         return
     if message.text and message.text.startswith("/"):
         await message.answer(ACCESS_DENIED)

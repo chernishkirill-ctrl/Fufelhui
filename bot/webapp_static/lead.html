@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru">
+<html lang="uk">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Запись на просмотр</title>
+<title>Запис на перегляд</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
@@ -48,30 +48,30 @@
 </head>
 <body>
 <div id="form-view">
-  <h1>📅 Запись на просмотр</h1>
-  <div class="object" id="object">Загрузка…</div>
+  <h1>📅 Запис на перегляд</h1>
+  <div class="object" id="object">Завантаження…</div>
 
-  <label for="name">Ваше имя</label>
-  <input id="name" autocomplete="name" maxlength="128" placeholder="Как к вам обращаться">
+  <label for="name">Ваше ім'я</label>
+  <input id="name" autocomplete="name" maxlength="128" placeholder="Як до вас звертатися">
 
-  <label for="phone">Телефон для связи</label>
+  <label for="phone">Телефон для зв'язку</label>
   <div class="row">
     <input id="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="32" placeholder="+380 __ ___ __ __">
-    <button class="ghost" id="share" type="button" hidden>Мой номер</button>
+    <button class="ghost" id="share" type="button" hidden>Мій номер</button>
   </div>
 
-  <label for="comment">Комментарий (необязательно)</label>
-  <textarea id="comment" maxlength="1000" placeholder="Удобное время, вопросы"></textarea>
+  <label for="comment">Коментар (необов'язково)</label>
+  <textarea id="comment" maxlength="1000" placeholder="Зручний час, запитання"></textarea>
 
   <div class="error" id="error"></div>
-  <button class="submit" id="submit" type="button">Отправить заявку</button>
-  <div class="note">Риелтор свяжется с вами в ближайшее время</div>
+  <button class="submit" id="submit" type="button">Надіслати заявку</button>
+  <div class="note">Рієлтор зв'яжеться з вами найближчим часом</div>
 </div>
 
 <div id="done-view" class="done" hidden>
   <div class="big">🎉</div>
-  <h1>Заявка отправлена!</h1>
-  <div class="object">Риелтор свяжется с вами в ближайшее время.</div>
+  <h1>Заявку надіслано!</h1>
+  <div class="object">Рієлтор зв'яжеться з вами найближчим часом.</div>
 </div>
 
 <script>
@@ -97,11 +97,11 @@
   }
 
   async function loadObject() {
-    if (!/^\d+$/.test(propertyId)) { $("object").textContent = "Объект не найден"; return; }
+    if (!/^\d+$/.test(propertyId)) { $("object").textContent = "Об'єкт не знайдено"; return; }
     try {
       const r = await fetch("/api/webapp/property/" + propertyId);
       const d = await r.json();
-      if (!d.ok) { $("object").textContent = d.error || "Объект не найден"; $("submit").disabled = true; return; }
+      if (!d.ok) { $("object").textContent = d.error || "Об'єкт не знайдено"; $("submit").disabled = true; return; }
       const obj = $("object");
       obj.textContent = "";
       const b = document.createElement("b");
@@ -110,7 +110,7 @@
       const extra = [d.details, d.location].filter(Boolean).join(" · ");
       if (extra) obj.appendChild(document.createTextNode(" · " + extra));
     } catch (e) {
-      $("object").textContent = "Нет связи с сервером, попробуйте ещё раз";
+      $("object").textContent = "Немає зв'язку з сервером, спробуйте ще раз";
     }
   }
 
@@ -126,11 +126,11 @@
     showError("");
     const name = $("name").value.trim();
     const phone = $("phone").value.trim();
-    if (name.length < 2) return showError("Введите имя");
-    if (phone.replace(/\D/g, "").length < 9) return showError("Введите номер телефона");
-    if (!initData) return showError("Откройте форму из Telegram");
+    if (name.length < 2) return showError("Вкажіть ім'я");
+    if (phone.replace(/\D/g, "").length < 9) return showError("Вкажіть номер телефону");
+    if (!initData) return showError("Відкрийте форму з Telegram");
     $("submit").disabled = true;
-    $("submit").textContent = "Отправляем…";
+    $("submit").textContent = "Надсилаємо…";
     try {
       const r = await fetch("/api/webapp/lead", {
         method: "POST",
@@ -138,15 +138,15 @@
         body: JSON.stringify({ init_data: initData, property_id: propertyId, name, phone, comment: $("comment").value.trim() }),
       });
       const d = await r.json();
-      if (!d.ok) throw new Error(d.error || "Не удалось отправить заявку");
+      if (!d.ok) throw new Error(d.error || "Не вдалося надіслати заявку");
       $("form-view").hidden = true;
       $("done-view").hidden = false;
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
       if (tg) setTimeout(() => tg.close(), 2500);
     } catch (e) {
-      showError(e.message || "Не удалось отправить заявку, попробуйте ещё раз");
+      showError(e.message || "Не вдалося надіслати заявку, спробуйте ще раз");
       $("submit").disabled = false;
-      $("submit").textContent = "Отправить заявку";
+      $("submit").textContent = "Надіслати заявку";
     }
   });
 
